@@ -1,4 +1,3 @@
-import os, sys
 from helper_functions import get_cmd_params, set_GPU
 
 arguments = [('-gpu', 'gpu', str, ''),
@@ -9,7 +8,6 @@ gpu = cmd_params['gpu']
 set_GPU(gpu)
 print(f'Setting GPU to [{gpu}]')
 
-import numpy as np
 import jax
 jax.config.update("jax_default_device", jax.devices()[0])
 jax.config.update("jax_enable_x64", True)
@@ -21,8 +19,6 @@ import distrax as dx
 from tensorflow_probability.substrates import jax as tfp
 tfd = tfp.distributions
 tfb = tfp.bijectors
-
-from jax.random import PRNGKey
 
 from models import LSM
 from helper_functions import read_seed, write_seed
