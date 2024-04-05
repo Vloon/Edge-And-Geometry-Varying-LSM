@@ -1,16 +1,59 @@
+import os, argparse
+
 import jax
 import jax.numpy as jnp
 
-from jaxtyping import Array, Float, PRNGKeyArray 
+from jaxtyping import Array, Float, PRNGKeyArray, Dict
 
-def key2str(key:PRNGKeyArray) -> str:
+def set_GPU(gpu:str = '') -> None:
     """
-    Returns the string version of the final entry in the PRNGKeyArray.
+    Sets the GPU safely in os.environ, and initializes JAX
     PARAMS:
-    key : JAX random key
+    gpu : string format of the GPU used. Multiple GPUs can be seperated with commas, e.g. '0,1,2'.
     """
-    numbers = re.findall(r"[0-9]+", str(key))
-    return numbers[-1]
+    if gpu is None: # If gpu is None, then all GPUs are used.
+        gpu = ''
+    os.environ['CUDA_VISIBLE_DEVICES'] = gpu
+    
+def get_cmd_params(parameter_list:list) -> Dict:
+    """
+    Gets the parameters described in parameter_list from the command line.
+    Returns a dictionary containing the variables with their value, either the value defined in the command line or the default value.
+    PARAMS:
+    parameter_list : list of tuples containing (arg_name <str>, dest <str>, type <type>, default <any> [*OPTIONAL], nargs <str> [OPTIONAL])
+        - arg_name is the name of the argument in the command line.
+        - var_name is the name of the variable in the returned dictionary (which we re-use as variable name here).
+        - type is the data-type of the variable.
+        - default is the default value it takes if nothing is passed to the command line. This argument is only optional if type is bool, where the default is always False.
+        - nargs is the number of arguments, where '?' (default) is 1 argument, '+' concatenates all arguments to 1 list. This argument is optional.
+
+        Example of a valid parameter list:
+            [('-m', 'mu', float, [1.,0.] '+'),
+            ('-s', 'sigma', float, 1.)]
+    """
+    ## Create parser
+    parser = argparse.ArgumentParser()
+    ## Add parameters to parser
+    for parameter in parameter_list:
+        assert len(parameter) in [3, 4, 5], f'Parameter tuple must be length 3 (bool only), 4 or 5 but is length {len(parameter)}.'
+        if len(parameter) == 3:
+            arg_name, dest, arg_type = parameter
+            assert arg_type == bool, f'Three parameters were passed, so arg_type should be bool but is {arg_type}'
+            nargs = '?'
+        elif len(parameter) == 4:
+            arg_name, dest, arg_type, default = parameter
+            nargs = '?' # If no nargs is given we default to single value
+        elif len(parameter) == 5:
+            arg_name, dest, arg_type, default, nargs = parameter
+        if arg_type != bool:
+            parser.add_argument(arg_name, dest=dest, nargs=nargs, type=arg_type, default=default)
+        else:
+            parser.add_argument(arg_name, dest=dest, action='store_true', default=False)
+    ## Parse arguments from CMD
+    args = parser.parse_args()
+    ## Create global parameters dictionary
+    global_params = {arg:getattr(args,arg) for arg in vars(args)}
+    return global_params
 
 def write_seed(seed_file:str, key:PRNGKeyArray) -> None:
     """
@@ -21,7 +64,8 @@ def write_seed(seed_file:str, key:PRNGKeyArray) -> None:
     """
     old_seed = read_seed(seed_file)
     with open(seed_file, 'w') as f:
-        f.write(f"{key2str(key)}\n{old_seed}")
+        keystr = re.findall(r"[0-9]+", str(key))[-1]
+        f.write(f"{keystr}\n{old_seed}")
 
 def read_seed(seed_file:str) -> int:
     """

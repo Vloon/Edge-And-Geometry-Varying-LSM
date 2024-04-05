@@ -1,7 +1,13 @@
 import os, sys
-GPU = 4
-os.environ['CUDA_VISIBLE_DEVICES'] = f'{GPU}'
-print(f'Setting GPU to [{GPU}]')
+from helper_functions import get_cmd_params, set_GPU
+
+arguments = [('-gpu', 'gpu', str, ''),
+             ]
+
+cmd_params = get_cmd_params(arguments)
+gpu = cmd_params['gpu']
+set_GPU(gpu)
+print(f'Setting GPU to [{gpu}]')
 
 import numpy as np
 import jax
