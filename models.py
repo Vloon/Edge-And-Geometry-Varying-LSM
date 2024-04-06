@@ -20,17 +20,17 @@ class LSM(BayesianModel):
     def __init__(self,
                  prior : Dict,
                  observation : Array = None, # If left None, we can use it to sample observations from the model
-                 hyperparameters : Dict = dict(mu_z=0., # Mean of the z/_z distribution
-                                             sigma_z=1., # Std of the z/_z distribution
-                                             eps=1e-5, # Clipping value for p/mu & kappa.
-                                             B=0.3, # Bookstein distance
-                                             )
+                 hyperparameters : Dict = dict(mu_z=0.,     # Mean of the _z distribution
+                                               sigma_z=1.,  # Std of the _z distribution
+                                               eps=1e-5,    # Clipping value for p/mu & kappa.
+                                               B=0.3,       # Bookstein distance
+                                              )
                  ):
         self.observation = observation
         self.param_priors = prior
         self.hyperparameters = hyperparameters
 
-    ### Define a number of functions used in the LSM
+    ## Define a number of functions used in the LSM
     def add_bookstein_anchors(self, _z, _zb2x: Float, _zb2y: Float, _zb3x: Float, B: Float = 0.3) -> Array:
         """
         Returns the Bookstein anchor coordinates for the first positions, in 2 dimensions.
