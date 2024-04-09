@@ -1,5 +1,6 @@
 import os, argparse, re
 
+import numpy as np
 import jax
 import jax.numpy as jnp
 
@@ -82,3 +83,19 @@ def read_seed(seed_file:str) -> int:
     with open(seed_file, 'r') as f:
         next_seed = int(f.read().split('\n')[0])
     return next_seed
+
+def triu2mat(v:Array) -> Array:
+    """
+    Fills a matrix from the upper triangle vector
+    Args:
+        v: (M,) upper triangle vector
+
+    Returns:
+        mat: (N,N) matrix
+    """
+    m = len(v)
+    n = int((1 + np.sqrt(1 + 8 * m))/2)
+    mat = jnp.zeros((n, n))
+    triu_indices = jnp.triu_indices(n, k=1)
+    mat = mat.at[triu_indices].set(v)
+    return mat + mat.T
