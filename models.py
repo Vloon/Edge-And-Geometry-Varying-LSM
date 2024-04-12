@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrnd
 
-from typing import Callable, Dict, Union
+from typing import Callable, Dict, Union, Optional
 from jaxtyping import Array, Float, PRNGKeyArray
 
 sys.path.insert(0, os.path.expanduser('~/bayesianmodels')) ## Location on the cluster, not local machine
@@ -22,8 +22,8 @@ class LSM(BayesianModel):
     """
     def __init__(self,
                  prior : Dict,
-                 observation : Array = None, # If left None, we can use it to sample observations from the model
-                 hyperbolic : bool = False, #  Not used unless neither 'z' nor '_z' is in the prior
+                 observation : Optional[Array] = None, # If left None, we can use it to sample observations from the model
+                 hyperbolic : Optional[bool] = False, #  Not used unless neither 'z' nor '_z' is in the prior
                  hyperparameters : Dict = dict(mu_z=0.,         # Mean of the _z distribution
                                                sigma_z=1.,      # Std of the _z distribution
                                                eps=1e-5,        # Clipping value for p/mu & kappa.
@@ -34,7 +34,7 @@ class LSM(BayesianModel):
                  ):
         if observation is not None and 'sigma_beta' in prior:
             ## Clip the continuous observations to deal with rounding to zero/one.
-            observation = jnp.clip(observation, hyperparameters['obs_eps'], 1 - hyperparameters['obs_eps'])
+            observation = jnp.clip(observation, hyperparameters.get('obs_eps'), 1 - hyperparameters.get('obs_eps'))
 
         self.observation = observation
         self.param_priors = prior
@@ -42,34 +42,55 @@ class LSM(BayesianModel):
         ## Define distance function based on prior parameters. If there is no position distribution in the prior (in hierarchical models), use the hyperbolic paramter.
         if '_z' in prior or 'z' in prior:
             self.distance_func = self.get_hyperbolic_distance if '_z' in prior else self.get_euclidean_distance
+            self.latpos = '_z'  if '_z' in prior else 'z'
         else:
             self.distance_func = self.get_hyperbolic_distance if hyperbolic else self.get_euclidean_distance
+            self.latpos = '_z' if hyperbolic else 'z'
+
     ## Define a number of functions used in the LSM
-    def add_bookstein_anchors(self, _z, _zb2x: Float, _zb2y: Float, _zb3x: Float, B: Float = 0.3) -> Array:
+    def add_bookstein_anchors(self, z: Array, zb2x: Float, zb2y: Float, zb3x: Float, B: Float = 0.3) -> Array:
         """
         Returns the Bookstein anchor coordinates for the first positions, in 2 dimensions.
         These Bookstein coordinates are restricted, meaning only 1 node is set, and the others are restricted and learned.
         Args:
-            _z: (N-3, D) regular nodes
-            _zb2x: x-coordinate of the 2nd Bookstein anchor
-            _zb2y: y_coordinate of the 2nd Bookstein anchor
-            _zb3x: x-coordinate of the 3rd Bookstein anchor, of which the y-value must be 0
+            z: (N-3, D) regular nodes
+            zb2x: x-coordinate of the 2nd Bookstein anchor
+            zb2y: y_coordinate of the 2nd Bookstein anchor
+            zb3x: x-coordinate of the 3rd Bookstein anchor, of which the y-value must be 0
             B: offset on the x-axis that the Bookstein anchors are put
 
         Returns:
-            _z: (N, D) positions including the Bookstein anchors
+            z: (N, D) positions including the Bookstein anchors
         """
         bookstein_anchors = jnp.zeros(shape=(3, 2))
         ## First positions at (-B,0)
         bookstein_anchors = bookstein_anchors.at[0, 0].set(-B)
         ## Second positions at (x,y)
-        bookstein_anchors = bookstein_anchors.at[1, 0].set(_zb2x)
-        bookstein_anchors = bookstein_anchors.at[1, 1].set(_zb2y)
+        bookstein_anchors = bookstein_anchors.at[1, 0].set(zb2x)
+        bookstein_anchors = bookstein_anchors.at[1, 1].set(zb2y)
         ## Third position at (x,0)
-        bookstein_anchors = bookstein_anchors.at[2, 0].set(_zb3x - B)
-        _zc = jnp.concatenate([bookstein_anchors, _z])
-        return _zc
+        bookstein_anchors = bookstein_anchors.at[2, 0].set(zb3x - B)
+        zc = jnp.concatenate([bookstein_anchors, z])
+        return zc
 
+    #
+    def get_latent_positions(self, position: GibbsState) -> Array:
+        """
+        Args:
+            position: current position
+
+        Returns:
+            the _z/z positions, with Bookstein anchors if applicable
+        """
+        z = position.get(self.latpos)
+        if self.hyperparameters.get('bkst'):
+            ## Add Bookstein anchors to the positions
+            zb2x = position.get(f"{self.latpos}b2x")
+            zb2y = position.get(f"{self.latpos}b2y")
+            zb3x = position.get(f"{self.latpos}b3x")
+            z = self.add_bookstein_anchors(z, zb2x, zb2y, zb3x, self.hyperparameters['B'])
+        return z
+    #
     def hyp_pnt(self, X: Array) -> jnp.ndarray:
         """
         Creates [z,x,y] positions in hyperbolic space by projecting [x,y] positions onto hyperbolic plane directly by solving the equation defining the hyperbolic plane.
@@ -77,7 +98,7 @@ class LSM(BayesianModel):
             X: (N,D) array containing 2D points to be projected up onto the hyperbolic plane
 
         Returns:
-            _X: (N,D+1) positions on the hyperbolic plane
+            x_hyp: (N,D+1) positions on the hyperbolic plane
         """
         N, D = X.shape
         z = jnp.sqrt(jnp.sum(X ** 2, axis=1) + 1)
@@ -122,7 +143,7 @@ class LSM(BayesianModel):
             keepdims: whether to keep the same number of dimensions, or flatten the new array.
 
         Returns:
-            :math:`\langle v,u \rangle`
+            :math:`\langle v,u \rangle_L`
         """
         signs = jnp.ones_like(v)
         signs = signs.at[:, 0].set(-1)
@@ -187,13 +208,7 @@ class LSM(BayesianModel):
         Returns:
             The Euclidean distances
         """
-        z = position['z']
-        if self.hyperparameters['bkst']:
-            ## Add Bookstein anchors to the positions
-            zb2x = position['zb2x']
-            zb2y = position['zb2y']
-            zb3x = position['zb3x']
-            z = self.add_bookstein_anchors(z, zb2x, zb2y, zb3x, self.hyperparameters['B'])
+        z = self.get_latent_positions(position)
 
         N, D = z.shape
         triu_indices = jnp.triu_indices(N, k=1)
@@ -201,27 +216,33 @@ class LSM(BayesianModel):
         return d
 
     #
-    def get_hyperbolic_distance(self, position: Dict) -> Array:
-        _z = position['_z']
-        if self.hyperparameters['bkst']:
-            ## Add Bookstein anchors to the positions
-            _zb2x = position['_zb2x']
-            _zb2y = position['_zb2y']
-            _zb3x = position['_zb3x']
-            _z = self.add_bookstein_anchors(_z, _zb2x, _zb2y, _zb3x, self.hyperparameters['B'])
+    def get_hyperbolic_positions(self, _z: Array):
+        """
+        Maps the positions pre-hyperbolic projection onto the hyperbolic plane.
+        Args:
+            _z: (N,D) positions pre-hyperbolic projection
 
-        ## Get distances on hyperbolic plane
+        Returns:
+            z: (N,D+1) positions on the hyperbolic plane
+        """
         N, D = _z.shape
-        triu_indices = jnp.triu_indices(N, k=1)
         mu_0 = jnp.zeros((N, D + 1))
         mu_0 = mu_0.at[:, 0].set(1)
 
-        mu_tilde = self.hyperparameters['mu_z'] * jnp.ones_like(_z)
+        mu_tilde = self.hyperparameters.get('mu_z') * jnp.ones_like(_z)
         mu = self.hyp_pnt(mu_tilde)
         v = jnp.concatenate([jnp.zeros((N, 1)), _z], axis=1)
         u = self.parallel_transport(v, mu_0, mu)
         z = self.exponential_map(mu, u)
+        return z
 
+    #
+    def get_hyperbolic_distance(self, position: GibbsState) -> Array:
+        ## Get distances on hyperbolic plane
+        _z = self.get_latent_positions(position)
+        N, D = _z.shape
+        triu_indices = jnp.triu_indices(N, k=1)
+        z = self.get_hyperbolic_positions(_z)
         d = self.lorentz_distance(z)[triu_indices]
         return d
 
@@ -230,8 +251,8 @@ class LSM(BayesianModel):
         position = getattr(state, 'position', state)
         d = self.distance_func(position)
 
-        beta_noise = position['sigma_beta']
-        eps = self.hyperparameters['eps']
+        beta_noise = position.get('sigma_beta')
+        eps = self.hyperparameters.get('eps')
         mu_beta = self.distance_mapping(d, eps)
         bound = jnp.sqrt(mu_beta * (1 - mu_beta))
         sigma_beta = beta_noise * bound
@@ -246,7 +267,7 @@ class LSM(BayesianModel):
     def bin_loglikelihood_fn(self, state: GibbsState) -> Float:
         position = getattr(state, 'position', state)
         d = self.distance_func(position)
-        p = self.distance_mapping(d, self.hyperparameters['eps'])
+        p = self.distance_mapping(d, self.hyperparameters.get('eps'))
         loglikelihood = dx.Bernoulli(probs=p)
         return loglikelihood
 
@@ -258,8 +279,8 @@ class LSM(BayesianModel):
         Returns:
             log_likelihood_fn: The appropriate log-likelihood function of the LSM
         """
-        loglikelihood_dist = self.con_loglikelihood_fn if 'sigma_beta'in self.param_priors else self.bin_loglikelihood_fn
-        loglikelihood_fn_ = lambda s: loglikelihood_dist(s).log_prob(self.observation).sum()
+        loglikelihood_distr = self.con_loglikelihood_fn if 'sigma_beta'in self.param_priors else self.bin_loglikelihood_fn
+        loglikelihood_fn_ = lambda s: loglikelihood_distr(s).log_prob(self.observation).sum()
         return loglikelihood_fn_
     #
 
@@ -275,14 +296,13 @@ class ClusterModel(LSM):
                  min_cluster_dist: Numeric = 0.,        # Minimum cluster distance, added to cluster means' radial distance
                  observations: Array = None,            # Leave None to allow sampling from prior
                  hyperparams: Dict = dict(mu_z=0.,      # Mean of the _z Normal distribution
-                                          sigma_z=0.25, # Std of the _z Normal distribution
+                                          sigma_z=1., # Std of the _z Normal distribution
                                           eps=1e-5,     # Clipping value for p/mu & kappa.
                                           bkst=False,   # Whether the position is in Bookstein coordinates
                                           B=0.3,        # Bookstein distance
                                           )
                  ):
         self.N = N
-        self.latpos = '_z' if hyperbolic else 'z'
         if not prob_per_cluster:
             prob_per_cluster = 1/n_clusters
         assert sum(prob_per_cluster) == 1., f"Probabilities per cluster must sum to 1 but instead sums to {sum(prob_per_cluster)}"
@@ -315,8 +335,8 @@ class ClusterModel(LSM):
         key_prior, key_div, key_z = jrnd.split(key, 3)
         initial_state = super().init_fn(key_prior, num_particles)
         initial_position = initial_state.position
-        r = initial_position['r']
-        phi = initial_position['phi']
+        r = initial_position.get('r')
+        phi = initial_position.get('phi')
 
         n_clusters = r.shape[0]
 
@@ -332,9 +352,9 @@ class ClusterModel(LSM):
 
         if num_particles > 1:
             keys = jrnd.split(key_z, num_particles)
-            initial_position[self.latpos] = jax.vmap(sample_fun, in_axes=(0, 0))(keys, cluster_means_per_node, self.hyperparameters['sigma_z'])
+            initial_position[self.latpos] = jax.vmap(sample_fun, in_axes=(0, 0))(keys, cluster_means_per_node, self.hyperparameters.get('sigma_z'))
         else:
-            initial_position[self.latpos] = jnp.squeeze(sample_fun(key_z, cluster_means_per_node, self.hyperparameters['sigma_z']))
+            initial_position[self.latpos] = jnp.squeeze(sample_fun(key_z, cluster_means_per_node, self.hyperparameters.get('sigma_z')))
         return GibbsState(position=initial_position)
 
     #
@@ -345,21 +365,22 @@ class ClusterModel(LSM):
         #
         def logprior_fn_(state: GibbsState) -> Float:
             position = getattr(state, 'position', state)
-            r = position['r']
-            phi = position['phi']
-            sigma_beta = position['sigma_beta']
-            latpos = position[self.latpos]
+            r = position.get('r')
+            phi = position.get('phi')
+            sigma_beta = position.get('sigma_beta')
+            latpos = position.get(self.latpos)
 
             logpdf = 0
-            logpdf += jnp.sum(self.param_priors['r'].log_prob(r))
-            logpdf += jnp.sum(self.param_priors['phi'].log_prob(phi))
-            logpdf += jnp.sum(self.param_priors['sigma_beta'].log_prob(sigma_beta))
+            logpdf += jnp.sum(self.param_priors.get('r').log_prob(r))
+            logpdf += jnp.sum(self.param_priors.get('phi').log_prob(phi))
+            logpdf += jnp.sum(self.param_priors.get('sigma_beta').log_prob(sigma_beta))
 
             cluster_means_per_node = self.get_cluster_means(r, phi)
-            latpos_prior = dx.Normal(loc=cluster_means_per_node, scale=self.hyperparameters['sigma_z'])
+            latpos_prior = dx.Normal(loc=cluster_means_per_node, scale=self.hyperparameters.get('sigma_z'))
             logpdf += jnp.sum(latpos_prior.log_prob(latpos))
             return logpdf
 
         return logprior_fn_
-
     #
+
+#
