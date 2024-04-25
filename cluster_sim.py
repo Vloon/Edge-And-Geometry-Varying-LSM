@@ -76,7 +76,7 @@ mu_z = 0.
 l_sigma_z = 1.
 
 num_mcmc_steps = 100
-num_particles = 1000
+num_particles = 1_000
 
 #####################################################################################
 ###### Sample a prior with a number of clusters in the position's ground truth ######
@@ -132,13 +132,19 @@ for task in range(n_tasks):
         plt.close()
         print(f"Saved figure to {savetitle}")
 
-    ## Save latent positions
+    ## Save ground truth latent variables
     ground_truth = {latpos:gt_positions,
                     'sigma_beta':gt_noise_term}
-
     ground_truth_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"{gt_filename}.pkl")
     with open(ground_truth_filename, 'wb') as f:
         pickle.dump(ground_truth, f)
+
+    ## Save ground truth cluster information
+    gt_cluster_info = dict(gt_cluster_index = cluster_model.gt_cluster_index,
+                           gt_cluster_means = cluster_model.cluster_means)
+    gt_cluster_info_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"{gt_filename}_cluster_info.pkl")
+    with open(gt_cluster_index_filename, 'wb') as f:
+        pickle.dump(gt_cluster_info, f)
 
     ## Sample observations from the likelihood
     key, subkey = jrnd.split(key)
@@ -204,7 +210,7 @@ for task in range(n_tasks):
     for subject in range(n_subjects):
         curr_obs = continuous_observations[task, subject]
         sorted_idc = jnp.argsort(continuous_observations[task, subject])
-        cond_ = lambda state: cond(state, max_unconnected=0.02)
+        cond_ = lambda state: cond(state, max_unconnected=0.02) 
         get_degree_dist_ = lambda state: get_degree_dist(state, obs=jnp.array(curr_obs), sorted_idc=sorted_idc)
         th_idx_plus_two, _ = jax.lax.while_loop(cond_, get_degree_dist_, (0, jnp.ones(N)))
 
