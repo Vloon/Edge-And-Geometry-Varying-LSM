@@ -1,6 +1,7 @@
 from helper_functions import get_cmd_params, set_GPU
 
 arguments = [('-gpu', 'gpu', str, ''),
+             ('-seed', 'seed', int, None),
              ]
 
 cmd_params = get_cmd_params(arguments)
@@ -33,8 +34,10 @@ N = 10
 M = N*(N-1)//2
 D = 2
 
-## Read key
-seed = read_seed('seed.txt')
+## Read seed
+seed = cmd_params.get('seed')
+if seed is None:
+    seed = read_seed('seed.txt')
 key = jrnd.PRNGKey(seed)
 
 ## Generate fake observations
@@ -82,7 +85,7 @@ coneuc_priors = dict(z=dx.Normal(mu_z*jnp.ones((N-3, D)), sigma_z*jnp.ones((N-3,
                      zb2x=dx.Normal(mu_z, sigma_z), # 2nd Bookstein anchor x-coordinate
                      zb2y=dx.Transformed(dx.Normal(mu_z, sigma_z), tfb.Exp()), # 2nd Bookstein anchor y-coordinate
                      zb3x=dx.Transformed(dx.Normal(mu_z, sigma_z), tfb.Exp()), # 3rd Bookstein anchor (Bookstein dist not yet taken into account)
-                     sigma_beta=dx.Transformed(dx.Normal(mu_sigma, sigma_sigma), tfb.Sigmoid())
+                     sigma_beta=dx.Uniform(0., 1.),
                     )
 
 coneuc_LSM = LSM(coneuc_priors, con_obs)
@@ -101,7 +104,7 @@ conhyp_priors = dict(_z=dx.Normal(mu_z*jnp.ones((N-3, D)), sigma_z*jnp.ones((N-3
                      _zb2x=dx.Normal(mu_z, sigma_z), # 2nd Bookstein anchor x-coordinate
                      _zb2y=dx.Transformed(dx.Normal(mu_z, sigma_z), tfb.Exp()), # 2nd Bookstein anchor y-coordinate
                      _zb3x=dx.Transformed(dx.Normal(mu_z, sigma_z), tfb.Exp()), # 3rd Bookstein anchor (Bookstein dist not yet taken into account)
-                     sigma_beta=dx.Transformed(dx.Normal(mu_sigma, sigma_sigma), tfb.Sigmoid())
+                     sigma_beta=dx.Uniform(0., 1.),
                     )
 
 conhyp_LSM = LSM(conhyp_priors, con_obs)
@@ -111,7 +114,7 @@ smc_parameters = dict(kernel=bjx.rmh,
                       num_mcmc_steps=100)
 key, smc_key = jrnd.split(key)
 particles, n_iter, lml = conhyp_LSM.inference(smc_key, mode='mcmc-in-smc', sampling_parameters=smc_parameters)
-print(f"Embedded continuous euclidean in {n_iter} iterations to get a LML of {lml}.")
+print(f"Embedded continuous hyperbolic in {n_iter} iterations to get a LML of {lml}.")
 
 ## Write key 
 write_seed('seed.txt', key)
