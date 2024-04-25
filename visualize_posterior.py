@@ -189,7 +189,6 @@ def plot_position_posterior(z: Array,
 
 hyperbolic = True
 bookstein = True
-add_disk = False
 latpos = '_z' if hyperbolic else 'z'
 edge_type = cmd_params['edge_type']
 subject = cmd_params['subject']
@@ -231,16 +230,14 @@ z_mn = np.mean(posterior, axis=0)
 ax = plot_hyperbolic_edges(z_mn, observation, ax)
 ax = plot_position_means(z_mn, ax, s=3, color='k', marker='x')
 ax = plot_position_posterior(posterior, ax, node_colors, alpha=alpha)
-xmin, xmax = ax.get_xlim()
-ymin, ymax = ax.get_ylim()
 
-if add_disk:
-    poincare_disk = plt.Circle((0, 0), 1, color='k', fill=False, clip_on=False)
-    ax.add_patch(poincare_disk)
-    if zoom:
-        ax.set(xlim=(xmin, xmax), ylim=(ymin, ymax))
+## Figures used to scale weird, so force proper scaling.
+max_dist = np.max(np.sqrt(np.sum(posterior**2, axis=2)).ravel())
+margin = 1.05
+R = max_dist*margin
+ax.set(xlim=(-R, R), ylim=(-R,R))
 
-figure_filename = os.path.join(os.getcwd(), 'Figures', 'cluster_sim', f"posterior_{edge_type}_{'hyp' if hyperbolic else 'euc'}_k{k}_sig{sig_z}_S{subject}_T{task}.png")
-bbox = None if add_disk else 'tight'
-plt.savefig(figure_filename, bbox_inches=bbox)
+extension = 'pdf'
+figure_filename = os.path.join(os.getcwd(), 'Figures', 'cluster_sim', f"posterior_{edge_type}_{'hyp' if hyperbolic else 'euc'}_k{k}_sig{sig_z}_S{subject}_T{task}.{extension}")
+plt.savefig(figure_filename, bbox_inches='tight')
 plt.close()
