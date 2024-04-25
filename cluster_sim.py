@@ -8,6 +8,7 @@ arguments = [('-gpu', 'gpu', str, ''),
              ('-sigz', 'sigma_z', float, 1.),
              ('-mcd', 'min_cluster_dist', float, 0.),
              ('-nclusters', 'n_clusters', int, 3),
+             ('-nsubjects', 'n_subjects', int, 3)
              ]
 
 cmd_params = get_cmd_params(arguments)
@@ -48,8 +49,10 @@ N = 164 # Total number of nodes
 M = N*(N-1)//2 # Total number of edges
 D = 2 # Latent dimensions
 
+max_D = 3.5 # Maximum latent distance allowed
+
 n_tasks = 1
-n_observations = 1 # / subjects?
+n_subjects = cmd_params.get('n_subjects') # / subjects?
 
 make_plot = cmd_params.get('make_plot')
 
@@ -61,13 +64,9 @@ min_cluster_dist = cmd_params.get('min_cluster_dist')
 n_clusters = cmd_params.get('n_clusters')
 
 probability_per_cluster = [1/n_clusters]*n_clusters
-sigmas =[sigma_z]*n_clusters # Standard deviations for each cluster
 
 k = [k_]*n_clusters # Shape parameter of the gamma distribution
 theta = [theta_]*n_clusters # Scale parameter of the gamma distribution
-
-mu_sigma = 0. # mean of the sigma distribution
-sigma_sigma = 1. # standard deviation of the sigma distribution
 
 hyperbolic = True
 latpos = '_z' if hyperbolic else 'z'
@@ -83,14 +82,14 @@ num_particles = 1000
 ###### Sample a prior with a number of clusters in the position's ground truth ######
 #####################################################################################
 
-continuous_observations = np.zeros((n_tasks, n_observations, M))
+continuous_observations = np.zeros((n_tasks, n_subjects, M))
 gt_distances = np.zeros((n_tasks, M))
 
 for task in range(n_tasks):
     print(f"Sampling ground truth for task {task}")
     gt_priors = dict(r = dx.Gamma(k, theta),
                      phi = dx.Uniform(jnp.zeros(n_clusters), 2*jnp.pi*jnp.ones(n_clusters)),
-                     sigma_beta =dx.Transformed(dx.Normal(mu_sigma, sigma_sigma), tfb.Sigmoid())
+                     sigma_beta = dx.Uniform(0., 1.)
                     )
     hyperparams = dict(mu_z=0.,  # Mean of the _z Normal distribution
                       sigma_z=sigma_z,  # Std of the _z Normal distribution
@@ -108,8 +107,13 @@ for task in range(n_tasks):
     key, subkey = jrnd.split(key)
     sampled_state = cluster_model.sample_from_prior(subkey, num_samples=1)
 
+    ## Scale the positions so that the maximum distance is max_D
+    dists = cluster_model.distance_func(sampled_state.position)
+    scale = np.max(cluster_model.distance_func(sampled_state.position)) / max_D
+    sampled_state.position[latpos] /= scale
+
     ## Save ground truth distances
-    gt_distances[task] = cluster_model.distance_func(sampled_state.position) #cluster_model.get_hyperbolic_distance(sampled_state.position) if hyperbolic else cluster_model.get_euclidean_distance(sampled_state.position)
+    gt_distances[task] = cluster_model.distance_func(sampled_state.position)
 
     gt_positions = sampled_state.position[latpos]
     gt_noise_term = sampled_state.position['sigma_beta']
@@ -120,7 +124,7 @@ for task in range(n_tasks):
         cluster_colors = np.array([plt.get_cmap('cool')(i) for i in np.linspace(0, 1, n_clusters)])
         node_colors = cluster_colors[cluster_model.gt_cluster_index,:]
 
-        cluster_means = cluster_model.cluster_means
+        cluster_means = cluster_model.cluster_means/scale
 
         plt.figure()
         plt.scatter(cluster_means[:, 0], cluster_means[:, 1], c=cluster_colors, marker='*')
@@ -140,19 +144,19 @@ for task in range(n_tasks):
 
     ## Sample observations from the likelihood
     key, subkey = jrnd.split(key)
-    observations = cluster_model.con_loglikelihood_fn(sampled_state).sample(seed=key, sample_shape=(n_observations))
+    observations = cluster_model.con_loglikelihood_fn(sampled_state).sample(seed=key, sample_shape=(n_subjects))
 
     continuous_observations[task] = observations
 
     if make_plot:
-        key, subkey = jrnd.split(key)
-        rnd_obs = triu2mat(observations[jax.random.randint(subkey, (1,), 0, n_observations)][0])
-        plt.figure()
-        plt.imshow(rnd_obs, cmap='OrRd', vmin=0, vmax=1)
-        savetitle = os.path.join(os.getcwd(), 'Figures', 'cluster_sim', f"con_obs_from_{gt_filename}.png")
-        plt.savefig(savetitle, bbox_inches='tight')
-        plt.close()
-        print(f"Saved figure to {savetitle}")
+        for subject in range(n_subjects):
+            obs = triu2mat(observations[subject])
+            plt.figure()
+            plt.imshow(obs, cmap='OrRd', vmin=0, vmax=1)
+            savetitle = os.path.join(os.getcwd(), 'Figures', 'cluster_sim', f"con_obs_from_{gt_filename}_S{subject}.png")
+            plt.savefig(savetitle, bbox_inches='tight')
+            plt.close()
+            print(f"Saved figure to {savetitle}")
 
 ## Save observations
 observations_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"con_observations_k{k_}_sig{sigma_z}_{'hyp' if hyperbolic else 'euc'}.pkl")
@@ -197,9 +201,9 @@ def get_degree_dist(state:Tuple[int, Array], obs:Array, sorted_idc:Array) -> Tup
     degree = jnp.sum(triu2mat(bin_obs), axis=1)
     return th_idx+1, degree
 
-binary_observations = np.zeros((n_tasks, n_observations, M))
+binary_observations = np.zeros((n_tasks, n_subjects, M))
 for task in range(n_tasks):
-    for subject in range(n_observations):
+    for subject in range(n_subjects):
         curr_obs = continuous_observations[task, subject]
         sorted_idc = jnp.argsort(continuous_observations[task, subject])
         get_degree_dist_fn = lambda state: get_degree_dist(state, obs=jnp.array(curr_obs), sorted_idc=sorted_idc)
@@ -209,14 +213,14 @@ for task in range(n_tasks):
         binary_observations[task, subject, :] = curr_obs > threshold
 
     if make_plot:
-        key, subkey = jrnd.split(key)
-        rnd_obs = triu2mat(binary_observations[task, jax.random.randint(subkey, (1,), 0, n_observations)][0])
-        plt.figure()
-        plt.imshow(rnd_obs, cmap='OrRd', vmin=0, vmax=1)
-        savetitle = os.path.join(os.getcwd(), 'Figures', 'cluster_sim', f"bin_obs_from_{gt_filename}.png")
-        plt.savefig(savetitle, bbox_inches='tight')
-        plt.close()
-        print(f"Saved figure to {savetitle}")
+        for subject in range(n_subjects):
+            obs = triu2mat(binary_observations[task, subject])
+            plt.figure()
+            plt.imshow(obs, cmap='OrRd', vmin=0, vmax=1)
+            savetitle = os.path.join(os.getcwd(), 'Figures', 'cluster_sim', f"bin_obs_from_{gt_filename}_S{subject}.png")
+            plt.savefig(savetitle, bbox_inches='tight')
+            plt.close()
+            print(f"Saved figure to {savetitle}")
 
 ## Save observations
 observations_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"bin_observations_k{k_}_sig{sigma_z}_{'hyp' if hyperbolic else 'euc'}.pkl")
@@ -266,17 +270,17 @@ def distance_correlations(gt_distances: Array, learned_distances: list, num_part
                               jnp.zeros(num_particles))
     return corrs
 
-correlations = np.zeros((2, n_tasks, n_observations, num_particles))
+correlations = np.zeros((2, n_tasks, n_subjects, num_particles))
 
 for task in range(n_tasks):
-    for subject in range(n_observations):
+    for subject in range(n_subjects):
         print(f"Performing inference on Task {task} for subject {subject}")
         ## Create new non-hierarchical continuous LSM
         nonh_con_prior = {latpos: dx.Normal(mu_z*jnp.ones((N-3, D)), l_sigma_z*jnp.ones((N-3, D))),
-                      f"{latpos}b2x": dx.Normal(mu_z, l_sigma_z),
-                      f"{latpos}b2y": dx.Transformed(dx.Normal(mu_z, l_sigma_z), tfb.Exp()),
-                      f"{latpos}b3x": dx.Transformed(dx.Normal(mu_z, l_sigma_z), tfb.Exp()),
-                      'sigma_beta': dx.Transformed(dx.Normal(mu_sigma, sigma_sigma), tfb.Sigmoid())}
+                          f"{latpos}b2x": dx.Normal(mu_z, l_sigma_z),
+                          f"{latpos}b2y": dx.Transformed(dx.Normal(mu_z, l_sigma_z), tfb.Exp()),
+                          f"{latpos}b3x": dx.Transformed(dx.Normal(mu_z, l_sigma_z), tfb.Exp()),
+                          'sigma_beta': dx.Uniform(0., 1.)}
 
         learned_model = LSM(nonh_con_prior, continuous_observations[task, subject])
         num_params = (N - 3) * D + 3 + 1  # regular nodes + Bookstein coordinates + sigma_beta_T
