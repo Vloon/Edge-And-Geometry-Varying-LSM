@@ -1,6 +1,11 @@
 from helper_functions import get_cmd_params, set_GPU, triu2mat, lorentz_to_poincare
 
 arguments = [('-gpu', 'gpu', str, ''),
+             ('-k', 'k', float, 1.5),
+             ('-sigz', 'sigma_z', float, 1.),
+             ('-et', 'edge_type', str, 'bin'),
+             ('-task', 'task', int, 0),
+             ('-subj', 'subject', int, 0),
              ]
 
 cmd_params = get_cmd_params(arguments)
@@ -142,16 +147,12 @@ def plot_hyperbolic_edges(p:Array,
 
 def plot_position_means(z_mn: Array,
                         ax: Axes = None,
-                        color: str = 'k',
-                        size: Float = 5,
                         **kwargs) -> Axes:
     """
     Args:
         z: (N, D) node positions posterior
         ax: plot axis
-        color: marker color
         size: marker size
-        marker: marker shape
         **kwargs: any plt.scatter parameters
 
     Returns:
@@ -160,7 +161,7 @@ def plot_position_means(z_mn: Array,
     if ax is None:
         plt.figure()
         ax = plt.gca()
-    ax.scatter(z_mn[:,0], z_mn[:,1], s=size, color=color, marker=marker, **kwargs)
+    ax.scatter(z_mn[:,0], z_mn[:,1], **kwargs)
     return ax
 
 def plot_position_posterior(z: Array,
@@ -190,11 +191,11 @@ hyperbolic = True
 bookstein = True
 add_disk = False
 latpos = '_z' if hyperbolic else 'z'
-edge_type = 'con'
-subject = 0
-task = 0
-k = 1.5 # Between-cluster distance
-sig_z = 1.0 # Within-cluster distance
+edge_type = cmd_params['edge_type']
+subject = cmd_params['subject']
+task = cmd_params['task']
+k = cmd_params['k'] # Between-cluster distance
+sig_z = cmd_params['sigma_z'] # Within-cluster distance
 
 ## Load posterior positions
 posterior_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"posterior_{edge_type}_{'hyp' if hyperbolic else 'euc'}_k{k}_sig{sig_z}_S{subject}_T{task}.pkl")
@@ -228,7 +229,7 @@ ax.axis('off')
 
 z_mn = np.mean(posterior, axis=0)
 ax = plot_hyperbolic_edges(z_mn, observation, ax)
-ax = plot_position_means(z_mn, ax, marker='x')
+ax = plot_position_means(z_mn, ax, s=3, color='k', marker='x')
 ax = plot_position_posterior(posterior, ax, node_colors, alpha=alpha)
 xmin, xmax = ax.get_xlim()
 ymin, ymax = ax.get_ylim()
