@@ -43,9 +43,9 @@ from models import ClusterModel, LSM, GibbsState
 
 ## General
 seed = read_seed('seed.txt')
-key = jrnd.PRNGKey(seed)
+key = jrnd.PRNGKey(1197963461)
 
-N = 164 # Total number of nodes
+N = 162 # Total number of nodes
 M = N*(N-1)//2 # Total number of edges
 D = 2 # Latent dimensions
 
@@ -108,9 +108,9 @@ for task in range(n_tasks):
     sampled_state = cluster_model.sample_from_prior(subkey, num_samples=1)
 
     ## Scale the positions so that the maximum distance is max_D
-    dists = cluster_model.distance_func(sampled_state.position)
     scale = np.max(cluster_model.distance_func(sampled_state.position)) / max_D
     sampled_state.position[latpos] /= scale
+    cluster_model.cluster_means /= scale
 
     ## Save ground truth distances
     gt_distances[task] = cluster_model.distance_func(sampled_state.position)
@@ -124,10 +124,8 @@ for task in range(n_tasks):
         cluster_colors = np.array([plt.get_cmap('cool')(i) for i in np.linspace(0, 1, n_clusters)])
         node_colors = cluster_colors[cluster_model.gt_cluster_index,:]
 
-        cluster_means = cluster_model.cluster_means/scale
-
         plt.figure()
-        plt.scatter(cluster_means[:, 0], cluster_means[:, 1], c=cluster_colors, marker='*')
+        plt.scatter(cluster_model.cluster_means[:, 0], cluster_model.cluster_means[:, 1], c=cluster_colors, marker='*')
         plt.scatter(gt_positions[:, 0], gt_positions[:, 1], c=node_colors, s=5)
         savetitle = os.path.join(os.getcwd(), 'Figures', 'cluster_sim', f"{gt_filename}.png")
         plt.savefig(savetitle, bbox_inches='tight')
@@ -168,7 +166,7 @@ with open(observations_filename, 'wb') as f:
 ################################################################################################
 
 #
-def cond(state:Tuple[int, Array], max_unconnected:Float=0.05) -> bool:
+def cond(state:Tuple[int, Array], max_unconnected:Float) -> bool:
     """
     Args:
         state: tuple containing th_idx and degree
@@ -206,8 +204,9 @@ for task in range(n_tasks):
     for subject in range(n_subjects):
         curr_obs = continuous_observations[task, subject]
         sorted_idc = jnp.argsort(continuous_observations[task, subject])
-        get_degree_dist_fn = lambda state: get_degree_dist(state, obs=jnp.array(curr_obs), sorted_idc=sorted_idc)
-        th_idx_plus_two, _ = jax.lax.while_loop(cond, get_degree_dist_fn, (0, jnp.ones(N)))
+        cond_ = lambda state: cond(state, max_unconnected=0.02)
+        get_degree_dist_ = lambda state: get_degree_dist(state, obs=jnp.array(curr_obs), sorted_idc=sorted_idc)
+        th_idx_plus_two, _ = jax.lax.while_loop(cond_, get_degree_dist_, (0, jnp.ones(N)))
 
         threshold = curr_obs[sorted_idc[th_idx_plus_two - 2]]
         binary_observations[task, subject, :] = curr_obs > threshold
