@@ -291,20 +291,18 @@ class ClusterModel(LSM):
     def __init__(self,
                  prior: Dict,
                  N: int,
+                 prob_per_cluster: list[Float],         # Leave None to divide nodes (roughly) evenly
                  hyperbolic: bool = False,
-                 prob_per_cluster: list[Float] = None,  # Leave None to divide nodes (roughly) evenly
                  min_cluster_dist: Numeric = 0.,        # Minimum cluster distance, added to cluster means' radial distance
                  observations: Array = None,            # Leave None to allow sampling from prior
                  hyperparams: Dict = dict(mu_z=0.,      # Mean of the _z Normal distribution
-                                          sigma_z=1., # Std of the _z Normal distribution
+                                          sigma_z=1.,   # Std of the _z Normal distribution
                                           eps=1e-5,     # Clipping value for p/mu & kappa.
                                           bkst=False,   # Whether the position is in Bookstein coordinates
                                           B=0.3,        # Bookstein distance
                                           )
                  ):
         self.N = N
-        if not prob_per_cluster:
-            prob_per_cluster = 1/n_clusters
         assert sum(prob_per_cluster) == 1., f"Probabilities per cluster must sum to 1 but instead sums to {sum(prob_per_cluster)}"
         self.prob_per_cluster = jnp.array(prob_per_cluster)
         self.min_cluster_dist = min_cluster_dist
