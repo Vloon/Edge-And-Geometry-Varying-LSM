@@ -117,7 +117,7 @@ class LSM(BayesianModel):
         Returns:
             p or mu, depending on use case
         """
-        return jnp.clip(jnp.exp(-d ** 2), eps, 1 - eps)
+        return jnp.clip(jnp.exp(-d), eps, 1 - eps)
 
     def euclidean_distance(self, z: Array) -> Array:
         """
