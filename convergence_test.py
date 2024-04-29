@@ -1,3 +1,5 @@
+import os
+
 from helper_functions import get_cmd_params, set_GPU, read_seed, write_seed, triu2mat
 
 arguments = [('-gpu', 'gpu', str, ''),
@@ -35,6 +37,7 @@ from models import ClusterModel, LSM, GibbsState, BayesianModel
 
 ## Global parameters
 VERBOSE = True
+CONVERGENCE_FILENAME = 'convergence_log.txt'
 
 #
 def has_converged(samples, threshold:Float = 1.1, verbose:bool = False) -> bool:
@@ -53,8 +56,12 @@ def has_converged(samples, threshold:Float = 1.1, verbose:bool = False) -> bool:
     # this is not watertight - depending on the MCMC/SMC approach this might contain a logdensity term as well
     # however, those tend to be 'converged' anyway
     if verbose:
-        print([var for var in jax.tree_util.tree_leaves(R)])
-        print(f'Maximum PSRF: {jnp.max(jnp.array([jnp.max(r) for r in jax.tree_util.tree_leaves(R)])):0.3f}')
+        # print([var for var in jax.tree_util.tree_leaves(R)])
+        log_txt = f"Maximum PSRF: {jnp.max(jnp.array([jnp.max(r) for r in jax.tree_util.tree_leaves(R)])):0.3f}"
+        print(log_txt)
+        with open(CONVERGENCE_FILENAME, 'a') as f:
+            f.write(log_txt)
+            f.write('\n')
     return jnp.all(R_scores)
 
 #
@@ -112,6 +119,13 @@ def run_smc_to_convergence(key:PRNGKey, model:BayesianModel, num_mcmc:int, incre
         elapsed_in_attempt = time.time() - time_in_attempt
         times.append(elapsed_in_attempt)
 
+        if VERBOSE:
+            log_txt = f"{num_mcmc} MCMC steps took {elapsed_in_attempt} seconds to run."
+            print(log_txt)
+            with open(CONVERGENCE_FILENAME, 'a') as f:
+                f.write(log_txt)
+                f.write('\n')
+
     return samples, num_mcmc, times
 
 #
@@ -154,46 +168,40 @@ D = 2 # Latent dimensions
 max_D = 3.5 # Maximum latent distance allowed
 
 ## Prior parameters
-n_clusters = 3
-probability_per_cluster = [1/n_clusters]*n_clusters
-k = [1.5]*n_clusters
-theta = [2/3]*n_clusters
+cluster_means = jnp.array([[0,0], [0,1], [1,0]])
+n_clusters = len(cluster_means)
+prob_per_cluster = [1/n_clusters]*n_clusters
 sigma_z = 1
 
 hyperbolic = True
 latpos = '_z' if hyperbolic else 'z'
 
 ## Initialize model to sample a prior and from that prior sample an observation. We will learn this observation back
-gt_priors = dict(r = dx.Gamma(k, theta),
-                 phi = dx.Uniform(jnp.zeros(n_clusters), 2*jnp.pi*jnp.ones(n_clusters)),
-                 sigma_beta = dx.Uniform(0., 1.)
+key, subkey = jrnd.split(key)
+gt_cluster_index = jrnd.choice(subkey, n_clusters, shape=(N,), p=jnp.array(prob_per_cluster))
+cluster_means_per_node = cluster_means[gt_cluster_index]
+
+gt_priors = dict(_z=dx.Normal(cluster_means_per_node, sigma_z*jnp.ones((N, D))),
+                 sigma_beta=dx.Uniform(0., 1.),
                  )
-hyperparams = dict(mu_z=0.,  # Mean of the positions' Normal distribution
-                  sigma_z=sigma_z,  # Std of the positions' Normal distribution
-                  eps=1e-5,  # Clipping value for p/mu & kappa.
-                  bkst=False,  # Whether the position is in Bookstein coordinates
-                  B=0.3,  # Bookstein distance
-                  )
-cluster_model = ClusterModel(prior = gt_priors,
-                             N = N,
-                             prob_per_cluster=probability_per_cluster,
-                             hyperbolic = hyperbolic,
-                             hyperparams = hyperparams
-                             )
+hyperparams = dict(mu_z=0.,  # Mean of the _z Normal distribution
+                   eps=1e-5,  # Clipping value for p/mu & kappa.
+                   bkst=False,  # Whether the position is in Bookstein coordinates
+                   B=0.3,  # Bookstein distance
+                   )
+gt_model = LSM(gt_priors, hyperparameters=hyperparams)
 
 key, prior_key, obs_key, smc_key = jrnd.split(key, 4)
-sampled_state = cluster_model.sample_from_prior(prior_key, num_samples=1)
+sampled_state = gt_model.sample_from_prior(prior_key, num_samples=1, max_distance=max_D)
 
-## Scale the positions so that the maximum distance is max_D
-scale = jnp.max(cluster_model.distance_func(sampled_state.position)) / max_D
-sampled_state.position[latpos] /= scale
-cluster_model.cluster_means /= scale
+## Also scale cluster means
+scale = gt_model.scale
+cluster_means /= scale
 
 ## Sample observation
-observation = cluster_model.con_loglikelihood_fn(sampled_state).sample(seed=obs_key, sample_shape=(1))
+observation = gt_model.con_loglikelihood_fn(sampled_state).sample(seed=obs_key, sample_shape=(1))
 
 ## Create new non-hierarchical continuous LSM. This is the one we test convergence for
-
 nonh_con_prior = {latpos: dx.Normal(jnp.zeros((N-3, D)), jnp.ones((N-3, D))),
                   f"{latpos}b2x": dx.Normal(0, 1),
                   f"{latpos}b2y": dx.Transformed(dx.Normal(0, 1), tfb.Exp()),
@@ -212,7 +220,7 @@ labels = None #??
 
 samples_smc, num_mcmc, times_smc = run_smc_to_convergence(smc_key,
                                                           learned_model,
-                                                          num_mcmc=100,
+                                                          num_mcmc=1_000,
                                                           increment=2,
                                                           num_params=num_params,
                                                           num_particles=num_particles,
@@ -220,7 +228,12 @@ samples_smc, num_mcmc, times_smc = run_smc_to_convergence(smc_key,
                                                           psrf_threshold=psrf_threshold
                                                           )
 
-print(f'Adaptive-tempered SMC done in {num_mcmc} steps per iteration ({times_smc[-1]:0.2f} seconds; {jnp.sum(jnp.array(times_smc)):0.2f} cumulative)')
+if VERBOSE:
+    log_txt = f"Adaptive-tempered SMC done in {num_mcmc} steps per iteration ({times_smc[-1]:0.2f} seconds; {jnp.sum(jnp.array(times_smc)):0.2f} cumulative)"
+    print(log_txt)
+    with open(CONVERGENCE_FILENAME, 'a') as f:
+        f.write(log_txt)
+        f.write('\n')
 
 boxplot_coefficients(f'figures/cluster_sim/convergence/smc_variable_selection_{latpos}.pdf', samples_smc.particles[latpos], r'$\beta$', labels)
 boxplot_coefficients(f'figures/cluster_sim/convergence/smc_variable_selection_lambda.pdf', samples_smc.particles['lam'], r'$\lambda$', labels)

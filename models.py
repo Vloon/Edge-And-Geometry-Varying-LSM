@@ -24,8 +24,7 @@ class LSM(BayesianModel):
                  prior : Dict,
                  observation : Optional[Array] = None, # If left None, we can use it to sample observations from the model
                  hyperbolic : Optional[bool] = False, #  Not used unless neither 'z' nor '_z' is in the prior
-                 hyperparameters : Dict = dict(mu_z=0.,         # Mean of the _z distribution
-                                               sigma_z=1.,      # Std of the _z distribution
+                 hyperparameters : Dict = dict(mu_z=0.,         # Mean of the z distribution in hyperbolic space
                                                eps=1e-5,        # Clipping value for p/mu & kappa.
                                                obs_eps=1e-7,    # Clipping value for the continuous observations
                                                bkst=True,       # Whether the position is in Bookstein coordinates
@@ -46,6 +45,26 @@ class LSM(BayesianModel):
         else:
             self.distance_func = self.get_hyperbolic_distance if hyperbolic else self.get_euclidean_distance
             self.latpos = '_z' if hyperbolic else 'z'
+
+    #
+    def sample_from_prior(self, key, num_samples:int = 1, max_distance:Float=None) -> GibbsState:
+        """
+        Re-implementation of sample_from_prior, allowing for rescaling according to a maximum distance.
+        Args:
+            key: jax random key
+            num_samples: number of samples
+            max_distance: maximum distance allowed in the prior
+
+        Returns:
+            GibbsState containing the (rescaled) sampled position
+        """
+        sampled_state = super().sample_from_prior(key, num_samples)
+        if max_distance:
+            self.scale = jnp.max(self.distance_func(sampled_state.position)) / max_distance
+            sampled_state.position[self.latpos] /= self.scale
+        else:
+            self.scale = 1
+        return sampled_state
 
     ## Define a number of functions used in the LSM
     def add_bookstein_anchors(self, z: Array, zb2x: Float, zb2y: Float, zb3x: Float, B: Float = 0.3) -> Array:
@@ -293,7 +312,6 @@ class ClusterModel(LSM):
                  N: int,
                  prob_per_cluster: list[Float],         # Leave None to divide nodes (roughly) evenly
                  hyperbolic: bool = False,
-                 min_cluster_dist: Numeric = 0.,        # Minimum cluster distance, added to cluster means' radial distance
                  observations: Array = None,            # Leave None to allow sampling from prior
                  hyperparams: Dict = dict(mu_z=0.,      # Mean of the _z Normal distribution
                                           sigma_z=1.,   # Std of the _z Normal distribution
@@ -305,7 +323,6 @@ class ClusterModel(LSM):
         self.N = N
         assert sum(prob_per_cluster) == 1., f"Probabilities per cluster must sum to 1 but instead sums to {sum(prob_per_cluster)}"
         self.prob_per_cluster = jnp.array(prob_per_cluster)
-        self.min_cluster_dist = min_cluster_dist
         super().__init__(prior, observations, hyperbolic, hyperparams)
 
     #
@@ -320,9 +337,8 @@ class ClusterModel(LSM):
         Returns:
             mu_z: (N, 2) means in cartesian coordinates
         """
-        r_ = r + self.min_cluster_dist
-        mu_x = jnp.cos(phi) * r_
-        mu_y = jnp.sin(phi) * r_
+        mu_x = jnp.cos(phi) * r
+        mu_y = jnp.sin(phi) * r
         self.cluster_means = jnp.vstack([mu_x, mu_y]).T
         cluster_means_per_node = self.cluster_means[self.gt_cluster_index]
         return cluster_means_per_node
@@ -380,5 +396,4 @@ class ClusterModel(LSM):
 
         return logprior_fn_
     #
-
 #

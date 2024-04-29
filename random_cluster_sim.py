@@ -44,7 +44,7 @@ from models import ClusterModel, LSM, GibbsState
 
 ## General
 seed = read_seed('seed.txt')
-key = jrnd.PRNGKey(1197963461)
+key = jrnd.PRNGKey(seed)
 
 N = 162 # Total number of nodes
 M = N*(N-1)//2 # Total number of edges
