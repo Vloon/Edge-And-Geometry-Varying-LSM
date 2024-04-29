@@ -83,7 +83,7 @@ for n_gt in range(num_ground_truths):
     gt_positions = gt_state.position[latpos]
     gt_distances = gt_distances.at[n_gt].set(gt_model.distance_func(gt_state.position))
 
-    gt_filename = f"gt_{n_gt}_s{sigma_z}_{'hyp' if hyperbolic else 'euc'}"
+    gt_filename = f"gt_{n_gt}_possig{sigma_z}_edgesig{sigma_beta}_{'hyp' if hyperbolic else 'euc'}"
 
     if make_plot:
         cluster_colors = jnp.array([plt.get_cmap('cool')(i) for i in jnp.linspace(0, 1, n_clusters)])
@@ -270,7 +270,7 @@ for n_gt in range(num_ground_truths):
         correlations = correlations.at[0, n_gt, sample, :].set(distance_correlations(gt_distances[n_gt], learned_distances, num_particles))
 
         ## Save posterior positions
-        posterior_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"posterior_con_{'hyp' if hyperbolic else 'euc'}_sig{sigma_z}_gt{n_gt}_S{sample}.pkl")
+        posterior_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"posterior_con_{'hyp' if hyperbolic else 'euc'}_possig{sigma_z}_edgesig{sigma_beta}_gt{n_gt}_S{sample}.pkl")
         with open(posterior_filename, 'wb') as f:
             pickle.dump(learned_positions, f)
 
@@ -281,7 +281,7 @@ for n_gt in range(num_ground_truths):
             plt.scatter(gt_distances[n_gt], learned_distances[p_idx], color='k', s=1)
             plt.xlabel('Ground truth distance')
             plt.ylabel('Learned distance')
-            savetitle = os.path.join(os.getcwd(), 'Figures', 'cluster_sim', f"gt_vs_learned_dist_con_{'hyp' if hyperbolic else 'euc'}_sig{sigma_z}_gt{n_gt}_S{sample}.png")
+            savetitle = os.path.join(os.getcwd(), 'Figures', 'cluster_sim', f"gt_vs_learned_dist_con_{'hyp' if hyperbolic else 'euc'}_possig{sigma_z}_edgesig{sigma_beta}_gt{n_gt}_S{sample}.png")
             plt.savefig(savetitle, bbox_inches='tight')
             plt.close()
             print(f"Saved figure to {savetitle}")
@@ -310,7 +310,7 @@ for n_gt in range(num_ground_truths):
         correlations = correlations.at[1, n_gt, sample, :].set(distance_correlations(gt_distances[n_gt], learned_distances, num_particles))
 
         ## Save posterior
-        posterior_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"posterior_bin_{'hyp' if hyperbolic else 'euc'}_sig{sigma_z}_gt{n_gt}_S{sample}.pkl")
+        posterior_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"posterior_bin_{'hyp' if hyperbolic else 'euc'}_possig{sigma_z}_edgesig{sigma_beta}_gt{n_gt}_S{sample}.pkl")
         with open(posterior_filename, 'wb') as f:
             pickle.dump(learned_positions, f)
 
@@ -321,11 +321,11 @@ for n_gt in range(num_ground_truths):
             plt.scatter(gt_distances[n_gt], learned_distances[p_idx], color='k', s=1)
             plt.xlabel('Ground truth distance')
             plt.ylabel('Learned distance')
-            savetitle = os.path.join(os.getcwd(), 'Figures', 'cluster_sim', f"gt_vs_learned_dist_bin_{'hyp' if hyperbolic else 'euc'}_sig{sigma_z}_gt{n_gt}_S{sample}.png")
+            savetitle = os.path.join(os.getcwd(), 'Figures', 'cluster_sim', f"gt_vs_learned_dist_bin_{'hyp' if hyperbolic else 'euc'}_possig{sigma_z}_edgesig{sigma_beta}_gt{n_gt}_S{sample}.png")
             plt.savefig(savetitle, bbox_inches='tight')
             plt.close()
             print(f"Saved figure to {savetitle}")
 
-correlations_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"gt_vs_learned_dist_correlations_{'hyp' if hyperbolic else 'euc'}_sig{sigma_z}.pkl")
+correlations_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"gt_vs_learned_dist_correlations_{'hyp' if hyperbolic else 'euc'}_possig{sigma_z}_edgesig{sigma_beta}.pkl")
 with open(correlations_filename, 'wb') as f:
     pickle.dump(correlations, f)
