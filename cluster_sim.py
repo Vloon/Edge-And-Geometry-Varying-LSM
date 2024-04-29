@@ -8,7 +8,8 @@ arguments = [('-gpu', 'gpu', str, ''),
              ('-sigz', 'sigma_z', float, 1.),
              ('-mcd', 'min_cluster_dist', float, 0.),
              ('-nclusters', 'n_clusters', int, 3),
-             ('-nsubjects', 'n_subjects', int, 3)
+             ('-nsubjects', 'n_subjects', int, 3),
+             ('-sigb', 'sigma_beta', float, 0.3),
              ]
 
 cmd_params = get_cmd_params(arguments)
@@ -51,8 +52,8 @@ D = 2 # Latent dimensions
 
 max_D = 3.5 # Maximum latent distance allowed
 
-n_tasks = 1
-n_subjects = cmd_params.get('n_subjects') # / subjects?
+n_tasks = 1 # = number of ground truths
+n_subjects = cmd_params.get('n_subjects') # = number of samples from ground truth
 
 make_plot = cmd_params.get('make_plot')
 
@@ -62,6 +63,7 @@ theta_ = 2/3
 sigma_z = cmd_params.get('sigma_z')
 min_cluster_dist = cmd_params.get('min_cluster_dist')
 n_clusters = cmd_params.get('n_clusters')
+sigma_beta = cmd_params.get('sigma_beta')
 
 probability_per_cluster = [1/n_clusters]*n_clusters
 
@@ -106,6 +108,7 @@ for task in range(n_tasks):
                                  hyperparams = hyperparams)
     key, subkey = jrnd.split(key)
     sampled_state = cluster_model.sample_from_prior(subkey, num_samples=1)
+    sampled_state.position['sigma_beta'] = sigma_beta
 
     ## Scale the positions so that the maximum distance is max_D
     scale = np.max(cluster_model.distance_func(sampled_state.position)) / max_D
@@ -116,7 +119,6 @@ for task in range(n_tasks):
     gt_distances[task] = cluster_model.distance_func(sampled_state.position)
 
     gt_positions = sampled_state.position[latpos]
-    gt_noise_term = sampled_state.position['sigma_beta']
 
     gt_filename = f"gt_k{k_}_sig{sigma_z}_{'hyp' if hyperbolic else 'euc'}_T{task}"
 
@@ -134,7 +136,7 @@ for task in range(n_tasks):
 
     ## Save ground truth latent variables
     ground_truth = {latpos:gt_positions,
-                    'sigma_beta':gt_noise_term}
+                    'sigma_beta':sigma_beta}
     ground_truth_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"{gt_filename}.pkl")
     with open(ground_truth_filename, 'wb') as f:
         pickle.dump(ground_truth, f)
@@ -143,7 +145,7 @@ for task in range(n_tasks):
     gt_cluster_info = dict(gt_cluster_index = cluster_model.gt_cluster_index,
                            gt_cluster_means = cluster_model.cluster_means)
     gt_cluster_info_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"{gt_filename}_cluster_info.pkl")
-    with open(gt_cluster_index_filename, 'wb') as f:
+    with open(gt_cluster_info_filename, 'wb') as f:
         pickle.dump(gt_cluster_info, f)
 
     ## Sample observations from the likelihood
@@ -210,7 +212,7 @@ for task in range(n_tasks):
     for subject in range(n_subjects):
         curr_obs = continuous_observations[task, subject]
         sorted_idc = jnp.argsort(continuous_observations[task, subject])
-        cond_ = lambda state: cond(state, max_unconnected=0.02) 
+        cond_ = lambda state: cond(state, max_unconnected=0.02)
         get_degree_dist_ = lambda state: get_degree_dist(state, obs=jnp.array(curr_obs), sorted_idc=sorted_idc)
         th_idx_plus_two, _ = jax.lax.while_loop(cond_, get_degree_dist_, (0, jnp.ones(N)))
 
