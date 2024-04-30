@@ -53,36 +53,27 @@ def has_converged(samples, threshold:Float = 1.1, verbose:bool = VERBOSE) -> boo
     Returns:
         Whether all samples have converged
     """
+    converge_check_start = time.time()
     R = jax.tree_map(potential_scale_reduction, samples)
+    print(f"{ALGO}: has_converged took {time.time() - converge_check_start} seconds")
     R_scores = jnp.array([jnp.all(var < threshold) for var in jax.tree_util.tree_leaves(R)])
     # this is not watertight - depending on the MCMC/SMC approach this might contain a logdensity term as well
     # however, those tend to be 'converged' anyway
     if verbose:
         print([var for var in jax.tree_util.tree_leaves(R)])
         print([var.shape for var in jax.tree_util.tree_leaves(R)])
-        log_txt = f"{ALGO}: Maximum PSRF: {jnp.max(jnp.array([jnp.max(r) for r in jax.tree_util.tree_leaves(R)])):0.3f}"
+        max_R = jnp.max(jnp.array([jnp.max(r) for r in jax.tree_util.tree_leaves(R)]))
+        log_txt = f"{ALGO}: Maximum PSRF: {max_R:0.3f}"
         print(log_txt)
         with open(CONVERGENCE_FILENAME, 'a') as f:
             f.write(log_txt)
             f.write('\n')
-    return jnp.all(R_scores)
+    return jnp.all(R_scores), max_R
 
-#
-def run_smc_batch(key: PRNGKey, model: BayesianModel, num_params: int, num_particles:int, num_mcmc: int, rmh_stepsize:Float=0.01) -> Tuple[TemperedSMCState, int, Float]:
-    """
-    Runs one batch of SMC
-    Args:
-        key: jax random key
-        model: uics Bayesian model
-        num_params: number of parameters in the model
-        num_particles: number of particles
-        num_mcmc: number of mcmc steps per smc iteration
-        rmh_stepsize: random-walk step size
-
-    Returns:
-        The SMC posterior, number of iterations, and log-marginal likelihood
-    """
-    rmh_parameters = dict(sigma=rmh_stepsize*jnp.eye(num_params))
+def run_smc_batch(key, model, num_mcmc: int):
+    rmh_step = 0.001*jnp.eye(num_params)
+    # rmh_step = rmh_step.at[num_params-1,num_params-1].set(0.001)
+    rmh_parameters = dict(sigma=rmh_step)
     smc_parameters = dict(kernel=rmh,
                           kernel_parameters=rmh_parameters,
                           num_particles=num_particles,
@@ -108,20 +99,7 @@ def run_smc_to_convergence(key:PRNGKey, model:BayesianModel, num_mcmc:int, incre
     Returns:
         The smc samples, final number of mcmc steps, and times it took per chain
     """
-    key, *subkeys = jrnd.split(key, num_chains + 1)
-    time_in_attempt = time.time()
-    samples, _, _ = jax.vmap(run_smc_batch, in_axes=(0, None, None, None, None))(jnp.array(subkeys), model, num_params, num_particles, num_mcmc)
-    elapsed_in_attempt = time.time() - time_in_attempt
-    times = [elapsed_in_attempt]
-
-    while not has_converged(samples.particles, threshold=psrf_threshold, verbose=VERBOSE):
-        key, *subkeys = jrnd.split(key, num_chains + 1)
-        num_mcmc *= increment
-        time_in_attempt = time.time()
-        samples, _, _ = jax.vmap(run_smc_batch, in_axes=(0, None, None, None, None))(jnp.array(subkeys), model, num_params, num_particles, num_mcmc)
-        elapsed_in_attempt = time.time() - time_in_attempt
-        times.append(elapsed_in_attempt)
-
+    def prt(num_mcmc, elapsed_in_attempt):
         if VERBOSE:
             log_txt = f"{ALGO}: iteration with {num_mcmc} MCMC steps took {elapsed_in_attempt} seconds to run."
             print(log_txt)
@@ -129,7 +107,37 @@ def run_smc_to_convergence(key:PRNGKey, model:BayesianModel, num_mcmc:int, incre
                 f.write(log_txt)
                 f.write('\n')
 
-    return samples, num_mcmc, times
+    def make_psrf_fig(psrf_vals):
+        plt.figure()
+        plt.scatter(jnp.arange(len(psrf_vals)), psrf_vals, s=5, color='k')
+        plt.xlabel('iteration')
+        plt.ylabel('Max PSRF')
+        plt.savefig("Figures/cluster_sim/convergence/smc_psrf_trace.pdf")
+        plt.close()
+
+    key, *subkeys = jrnd.split(key, num_chains + 1)
+    print(f"\t{ALGO}: starting inference with {num_chains} chain, {num_mcmc} MCMC steps")
+    time_in_attempt = time.time()
+    samples, _, _ = jax.vmap(run_smc_batch, in_axes=(0, None, None))(jnp.array(subkeys), model, num_mcmc)
+    elapsed_in_attempt = time.time() - time_in_attempt
+    times = [elapsed_in_attempt]
+    prt(num_mcmc, elapsed_in_attempt)
+    has, psrf = has_converged(samples.particles, threshold=psrf_threshold, verbose=VERBOSE)
+    psrf_vals = [psrf]
+    make_psrf_fig(psrf_vals)
+    while not has:
+        key, *subkeys = jrnd.split(key, num_chains + 1)
+        num_mcmc *= increment
+        print(f"\t{ALGO}: starting inference with {num_chains} chain, {num_mcmc} MCMC steps")
+        time_in_attempt = time.time()
+        samples, _, _ = jax.vmap(run_smc_batch, in_axes=(0, None, None))(jnp.array(subkeys), model, num_mcmc)
+        elapsed_in_attempt = time.time() - time_in_attempt
+        times.append(elapsed_in_attempt)
+        prt(num_mcmc, elapsed_in_attempt)
+        has, psrf = has_converged(samples.particles, threshold=psrf_threshold, verbose=VERBOSE)
+        psrf_vals.append(psrf)
+        make_psrf_fig(psrf_vals)
+    return samples, num_mcmc, times, psrf_vals
 
 #
 def run_nuts_batch(key: PRNGKey, model: BayesianModel, num_mcmc: int, initial_state: GibbsState = None, nuts_parameters:Dict=None):
@@ -287,7 +295,7 @@ learned_model = LSM(nonh_con_prior, observation)
 
 num_params = (N - 3) * D + 3 + 1
 num_particles = 1_000
-num_chains = 4
+num_chains = 2
 psrf_threshold = 1.1
 burnin_factor = 0.5
 
@@ -297,15 +305,15 @@ if ALGO == 'smc':
 
     labels = None #??
 
-    samples_smc, num_mcmc, times_smc = run_smc_to_convergence(test_key,
-                                                              learned_model,
-                                                              num_mcmc=1_000,
-                                                              increment=2,
-                                                              num_params=num_params,
-                                                              num_particles=num_particles,
-                                                              num_chains=num_chains,
-                                                              psrf_threshold=psrf_threshold
-                                                              )
+    samples_smc, num_mcmc, times_smc, psrf_vals = run_smc_to_convergence(test_key,
+                                                                         learned_model,
+                                                                         num_mcmc=100,
+                                                                         increment=2,
+                                                                         num_params=num_params,
+                                                                         num_particles=num_particles,
+                                                                         num_chains=num_chains,
+                                                                         psrf_threshold=psrf_threshold
+                                                                         )
 
     if VERBOSE:
         log_txt = f"Adaptive-tempered SMC done in {num_mcmc} steps per iteration ({times_smc[-1]:0.2f} seconds; {jnp.sum(jnp.array(times_smc)):0.2f} cumulative)"
@@ -314,8 +322,14 @@ if ALGO == 'smc':
             f.write(log_txt)
             f.write('\n')
 
-    # boxplot_coefficients(f'figures/cluster_sim/convergence/smc_variable_selection_{latpos}.pdf', samples_smc.particles[latpos], latpos, labels)
-    boxplot_coefficients(f'figures/cluster_sim/convergence/smc_variable_selection_lambda.pdf', samples_smc.particles['lam'], r'$\lambda$', labels)
+    boxplot_coefficients(f'Figures/cluster_sim/convergence/smc_variable_selection_lambda.pdf', samples_smc.particles['lam'], r'$\lambda$', labels)
+    plt.figure()
+    plt.scatter(psrf_vals, s=5, color='k')
+    plt.xlabel('iteration')
+    plt.ylabel('Max PSRF')
+    plt.savefig("Figures/cluster_sim/convergence/smc_psrf_trace.pdf")
+    plt.close()
+
 elif ALGO == 'nuts':
     print('Starting NUTS')
 
@@ -336,6 +350,4 @@ elif ALGO == 'nuts':
     elapsed_nuts = end_nuts - start_nuts
     print(f'Adaptive-tuned NUTS MCMC done in {num_mcmc} steps ({elapsed_nuts:0.2f} seconds)')
 
-    # boxplot_coefficients(f'figures/cluster_sim/convergence/smc_variable_selection_{latpos}.pdf', samples_smc.particles[latpos], latpos, labels)
-    boxplot_coefficients(f'figures/cluster_sim/convergence/smc_variable_selection_lambda.pdf', samples_smc.particles['lam'], r'$\lambda$', labels)
-
+    boxplot_coefficients(f'figures/cluster_sim/convergence/smc_variable_selection_{latpos}.pdf', samples_nuts['lam'], r'$\lambda$', labels)
