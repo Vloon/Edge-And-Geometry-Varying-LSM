@@ -1,11 +1,12 @@
 from helper_functions import get_cmd_params, set_GPU, triu2mat, lorentz_to_poincare
 
 arguments = [('-gpu', 'gpu', str, ''),
-             ('-k', 'k', float, 1.5),
              ('-sigz', 'sigma_z', float, 1.),
+             ('-sigb', 'sigma_beta', float, 0.2),
              ('-et', 'edge_type', str, 'bin'),
-             ('-task', 'task', int, 0),
-             ('-subj', 'subject', int, 0),
+             ('-gt', 'ground_truth', int, 0),
+             ('-spl', 'sample', int, 0),
+             ('-ext', 'extension', str, 'png')
              ]
 
 cmd_params = get_cmd_params(arguments)
@@ -191,13 +192,15 @@ hyperbolic = True
 bookstein = True
 latpos = '_z' if hyperbolic else 'z'
 edge_type = cmd_params['edge_type']
-subject = cmd_params['subject']
-task = cmd_params['task']
-k = cmd_params['k'] # Between-cluster distance
-sig_z = cmd_params['sigma_z'] # Within-cluster distance
+geometry = 'hyp' if hyperbolic else 'euc'
+n_gt = cmd_params['ground_truth']
+sample = cmd_params['sample']
+sigma_z = cmd_params['sigma_z'] # Within-cluster distance
+sigma_beta = cmd_params['sigma_beta'] # Edge noise
+extension = cmd_params['extension']
 
 ## Load posterior positions
-posterior_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"posterior_{edge_type}_{'hyp' if hyperbolic else 'euc'}_k{k}_sig{sig_z}_S{subject}_T{task}.pkl")
+posterior_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"{edge_type}_{geometry}_posterior_possig{sigma_z}_edgesig{sigma_beta}_gt{n_gt}_S{sample}.pkl")
 with open(posterior_filename, 'rb') as f:
     posterior = pickle.load(f)
 
@@ -210,10 +213,10 @@ if bookstein:
     posterior[:,:3,:] += np.random.normal(loc=0, scale=1e-12, size=(num_particles, 3, D)) # Wiggle the bookstein nodes to deal with zero-division.
 
 ## Load observation
-observation_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"{edge_type}_observations_k{k}_sig{sig_z}_{'hyp' if hyperbolic else 'euc'}.pkl")
+observation_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"{edge_type}_{geometry}_observations_possig{sigma_z}_edgesig{sigma_beta}.pkl")
 with open(observation_filename, 'rb') as f:
     observations = np.array(pickle.load(f)) # Convert from jax.numpy to numpy array
-observation = observations[task, subject]
+observation = observations[n_gt, sample]
 
 ## Plotting parameters
 cmap = 'nipy_spectral'
@@ -237,7 +240,6 @@ margin = 1.05
 R = max_dist*margin
 ax.set(xlim=(-R, R), ylim=(-R,R))
 
-extension = 'pdf'
-figure_filename = os.path.join(os.getcwd(), 'Figures', 'cluster_sim', f"posterior_{edge_type}_{'hyp' if hyperbolic else 'euc'}_k{k}_sig{sig_z}_S{subject}_T{task}.{extension}")
+figure_filename = os.path.join(os.getcwd(), 'Figures', 'cluster_sim', f"{edge_type}_{geometry}_posterior_possig{sigma_z}_edgesig{sigma_beta}_gt{n_gt}_S{sample}.{extension}")
 plt.savefig(figure_filename, bbox_inches='tight')
 plt.close()
