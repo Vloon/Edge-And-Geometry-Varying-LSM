@@ -39,7 +39,7 @@ from models import LSM, GibbsState, BayesianModel
 ## Global parameters
 VERBOSE = True
 CONVERGENCE_FILENAME = 'convergence_log.txt'
-ALGO = cmd_param.get('algorithm')
+ALGO = cmd_params.get('algorithm')
 
 #
 def has_converged(samples, threshold:Float = 1.1, verbose:bool = VERBOSE) -> bool:
@@ -58,7 +58,8 @@ def has_converged(samples, threshold:Float = 1.1, verbose:bool = VERBOSE) -> boo
     # this is not watertight - depending on the MCMC/SMC approach this might contain a logdensity term as well
     # however, those tend to be 'converged' anyway
     if verbose:
-        # print([var for var in jax.tree_util.tree_leaves(R)])
+        print([var for var in jax.tree_util.tree_leaves(R)])
+        print([var.shape for var in jax.tree_util.tree_leaves(R)])
         log_txt = f"{ALGO}: Maximum PSRF: {jnp.max(jnp.array([jnp.max(r) for r in jax.tree_util.tree_leaves(R)])):0.3f}"
         print(log_txt)
         with open(CONVERGENCE_FILENAME, 'a') as f:
@@ -130,7 +131,6 @@ def run_smc_to_convergence(key:PRNGKey, model:BayesianModel, num_mcmc:int, incre
 
     return samples, num_mcmc, times
 
-
 #
 def run_nuts_batch(key: PRNGKey, model: BayesianModel, num_mcmc: int, initial_state: GibbsState = None, nuts_parameters:Dict=None):
     mcmc_parameters = dict(kernel=nuts,
@@ -161,7 +161,8 @@ def run_nuts_to_convergence(key, model, num_warmup, num_mcmc, increment, num_cha
                                                                       None))(jnp.array(subkeys),
                                                                              initial_states,
                                                                              num_warmup)
-
+    print('WARM STATES:', warm_states)
+    print('WARM PARAMS:', warm_parameters)
     warm_states_in_axes = jax.tree_map(lambda l: 0, warm_states)
     warm_parameters_in_axes = jax.tree_map(lambda l: 0, warm_parameters)
     key, *subkeys = jrnd.split(key, num_chains + 1)
@@ -231,22 +232,22 @@ def boxplot_coefficients(filename, samples, ylabel, labels=None):
     plt.savefig(filename, bbox_inches='tight', pad_inches=0.0)
     plt.close()
 
-## 1197963461 is a good seed for some cluster separation.
 key = jrnd.PRNGKey(cmd_params.get('seed'))
 
 N = 162 # Total number of nodes
 M = N*(N-1)//2 # Total number of edges
 D = 2 # Latent dimensions
 
-max_D = 3.5 # Maximum latent distance allowed
+max_D = 11.5 # Maximum latent distance allowed
 
 ## Prior parameters
 cluster_means = jnp.array([[0,0], [0,1], [1,0]])
 n_clusters = len(cluster_means)
 prob_per_cluster = [1/n_clusters]*n_clusters
 sigma_z = 1
+sigma_beta = 0.2
 
-hyperbolic = True
+hyperbolic = False
 latpos = '_z' if hyperbolic else 'z'
 
 ## Initialize model to sample a prior and from that prior sample an observation. We will learn this observation back
@@ -254,9 +255,9 @@ key, subkey = jrnd.split(key)
 gt_cluster_index = jrnd.choice(subkey, n_clusters, shape=(N,), p=jnp.array(prob_per_cluster))
 cluster_means_per_node = cluster_means[gt_cluster_index]
 
-gt_priors = dict(_z=dx.Normal(cluster_means_per_node, sigma_z*jnp.ones((N, D))),
-                 sigma_beta=dx.Uniform(0., 1.),
-                 )
+gt_priors = {latpos:dx.Normal(cluster_means_per_node, sigma_z*jnp.ones((N, D))),
+            'sigma_beta':dx.Uniform(0., 1.)
+             }
 hyperparams = dict(mu_z=0.,  # Mean of the _z Normal distribution
                    eps=1e-5,  # Clipping value for p/mu & kappa.
                    bkst=False,  # Whether the position is in Bookstein coordinates
@@ -266,6 +267,7 @@ gt_model = LSM(gt_priors, hyperparameters=hyperparams)
 
 key, prior_key, obs_key, test_key = jrnd.split(key, 4)
 sampled_state = gt_model.sample_from_prior(prior_key, num_samples=1, max_distance=max_D)
+sampled_state.position['sigma_beta'] = sigma_beta
 
 ## Also scale cluster means
 scale = gt_model.scale
@@ -312,7 +314,7 @@ if ALGO == 'smc':
             f.write(log_txt)
             f.write('\n')
 
-    boxplot_coefficients(f'figures/cluster_sim/convergence/smc_variable_selection_{latpos}.pdf', samples_smc.particles[latpos], latpos, labels)
+    # boxplot_coefficients(f'figures/cluster_sim/convergence/smc_variable_selection_{latpos}.pdf', samples_smc.particles[latpos], latpos, labels)
     boxplot_coefficients(f'figures/cluster_sim/convergence/smc_variable_selection_lambda.pdf', samples_smc.particles['lam'], r'$\lambda$', labels)
 elif ALGO == 'nuts':
     print('Starting NUTS')
@@ -334,6 +336,6 @@ elif ALGO == 'nuts':
     elapsed_nuts = end_nuts - start_nuts
     print(f'Adaptive-tuned NUTS MCMC done in {num_mcmc} steps ({elapsed_nuts:0.2f} seconds)')
 
-    boxplot_coefficients(f'figures/cluster_sim/convergence/smc_variable_selection_{latpos}.pdf', samples_smc.particles[latpos], latpos, labels)
+    # boxplot_coefficients(f'figures/cluster_sim/convergence/smc_variable_selection_{latpos}.pdf', samples_smc.particles[latpos], latpos, labels)
     boxplot_coefficients(f'figures/cluster_sim/convergence/smc_variable_selection_lambda.pdf', samples_smc.particles['lam'], r'$\lambda$', labels)
 
