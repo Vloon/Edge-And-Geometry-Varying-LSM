@@ -22,6 +22,8 @@ import jax.numpy as jnp
 import blackjax as bjx
 import distrax as dx
 
+from blackjax.diagnostics import potential_scale_reduction
+
 import matplotlib.pyplot as plt
 import os, pickle, time
 
@@ -40,11 +42,13 @@ hyperbolic = True
 latpos = '_z' if hyperbolic else 'z'
 
 sigma_z = cmd_params.get('sigma_z')
-max_D = 3.5
+max_D = 11 # With \mu/p = exp(-d) and eps = 1e-5, max_d (i.e. the distance before clipping) = 5 ln(10) ~= 11.5
 
 N = 162
 M = N*(N-1)//2
 D = 2
+
+rmh_stepsize = 0.01
 
 cluster_means = jnp.array([[0,0], [0,1], [1,0]])
 n_clusters = len(cluster_means)
@@ -83,7 +87,7 @@ for n_gt in range(num_ground_truths):
     gt_positions = gt_state.position[latpos]
     gt_distances = gt_distances.at[n_gt].set(gt_model.distance_func(gt_state.position))
 
-    gt_filename = f"gt_{n_gt}_possig{sigma_z}_edgesig{sigma_beta}_{'hyp' if hyperbolic else 'euc'}"
+    gt_filename = f"gt{n_gt}_possig{sigma_z}_{'hyp' if hyperbolic else 'euc'}"
 
     if make_plot:
         cluster_colors = jnp.array([plt.get_cmap('cool')(i) for i in jnp.linspace(0, 1, n_clusters)])
@@ -119,13 +123,13 @@ for n_gt in range(num_ground_truths):
             obs = triu2mat(observations[sample])
             plt.figure()
             plt.imshow(obs, cmap='OrRd', vmin=0, vmax=1)
-            savetitle = os.path.join(os.getcwd(), 'Figures', 'cluster_sim', f"con_obs_from_{gt_filename}_S{sample}.png")
+            savetitle = os.path.join(os.getcwd(), 'Figures', 'cluster_sim', f"con_obs_from_{gt_filename}_edgesigma{sigma_beta}_S{sample}.png")
             plt.savefig(savetitle, bbox_inches='tight')
             plt.close()
             print(f"Saved figure to {savetitle}")
 
 ## Save observations
-observations_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"con_observations_sig{sigma_z}_{'hyp' if hyperbolic else 'euc'}.pkl")
+observations_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"con_{'hyp' if hyperbolic else 'euc'}_observations_possig{sigma_z}_edgesig{sigma_beta}.pkl")
 with open(observations_filename, 'wb') as f:
     pickle.dump(continuous_observations, f)
 
@@ -190,7 +194,7 @@ for n_gt in range(num_ground_truths):
             print(f"Saved figure to {savetitle}")
 
 ## Save observations
-observations_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"bin_observations_sig{sigma_z}_{'hyp' if hyperbolic else 'euc'}.pkl")
+observations_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"bin_{'hyp' if hyperbolic else 'euc'}_observations_possig{sigma_z}_edgesig{sigma_beta}.pkl")
 with open(observations_filename, 'wb') as f:
     pickle.dump(binary_observations, f)
 
@@ -213,6 +217,7 @@ def extract_from_trace(posterior: TemperedSMCState, model: LSM, hyperbolic: bool
     """
     flat_particles, _ = jax.tree_util.tree_flatten(posterior.particles)
     variable_names = list(posterior.particles.keys())
+    ### TREE MAP DINGEN HIER?
     reshaped_posterior = [{vname: flat_particles[i][j] for i, vname in enumerate(variable_names) if latpos in vname} for j in range(num_particles)]
     learned_positions = jnp.array([model.get_latent_positions(p) for p in reshaped_posterior])
     if hyperbolic:
@@ -237,7 +242,7 @@ def distance_correlations(gt_distances: Array, learned_distances: list, num_part
                               jnp.zeros(num_particles))
     return corrs
 
-num_mcmc_steps = 100
+num_mcmc_steps = 100 # TODO: replace with converged amount
 num_particles = 1_000
 
 correlations = jnp.zeros((2, num_ground_truths, num_samples, num_particles))
@@ -254,7 +259,7 @@ for n_gt in range(num_ground_truths):
 
         learned_model = LSM(nonh_con_prior, continuous_observations[n_gt, sample])
         num_params = (N - 3) * D + 3 + 1  # regular nodes + Bookstein coordinates + sigma_beta_T
-        rmh_parameters = dict(sigma=0.01 * jnp.eye(num_params))
+        rmh_parameters = dict(sigma=rmh_stepsize * jnp.eye(num_params))
         smc_parameters = dict(kernel=bjx.rmh,
                               kernel_parameters=rmh_parameters,
                               num_particles=num_particles,
@@ -270,7 +275,7 @@ for n_gt in range(num_ground_truths):
         correlations = correlations.at[0, n_gt, sample, :].set(distance_correlations(gt_distances[n_gt], learned_distances, num_particles))
 
         ## Save posterior positions
-        posterior_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"posterior_con_{'hyp' if hyperbolic else 'euc'}_possig{sigma_z}_edgesig{sigma_beta}_gt{n_gt}_S{sample}.pkl")
+        posterior_filename = os.path.join(os.getcwd(), 'Data', 'cluster_sim', f"con_{'hyp' if hyperbolic else 'euc'}_posterior_possig{sigma_z}_edgesig{sigma_beta}_gt{n_gt}_S{sample}.pkl")
         with open(posterior_filename, 'wb') as f:
             pickle.dump(learned_positions, f)
 
@@ -294,7 +299,7 @@ for n_gt in range(num_ground_truths):
 
         learned_model = LSM(nonh_bin_prior, binary_observations[n_gt, sample])
         num_params = (N - 3) * D + 3 # regular nodes + Bookstein coordinates
-        rmh_parameters = dict(sigma=0.01 * jnp.eye(num_params))
+        rmh_parameters = dict(sigma=rmh_stepsize * jnp.eye(num_params))
         smc_parameters = dict(kernel=bjx.rmh,
                               kernel_parameters=rmh_parameters,
                               num_particles=num_particles,

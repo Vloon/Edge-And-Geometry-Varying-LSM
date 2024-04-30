@@ -59,11 +59,12 @@ class LSM(BayesianModel):
             GibbsState containing the (rescaled) sampled position
         """
         sampled_state = super().sample_from_prior(key, num_samples)
+        self.scale = 1
         if max_distance:
-            self.scale = jnp.max(self.distance_func(sampled_state.position)) / max_distance
-            sampled_state.position[self.latpos] /= self.scale
-        else:
-            self.scale = 1
+            max_sampled_dist = jnp.max(self.distance_func(sampled_state.position))
+            if max_sampled_dist > max_distance:
+                self.scale = max_sampled_dist / max_distance
+                sampled_state.position[self.latpos] /= self.scale
         return sampled_state
 
     ## Define a number of functions used in the LSM
