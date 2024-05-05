@@ -16,7 +16,6 @@ import jax
 jax.config.update("jax_default_device", jax.devices()[0])
 jax.config.update("jax_enable_x64", True)
 import jax.random as jrnd
-from jax.random import PRNGKey
 import jax.numpy as jnp
 
 import time
@@ -30,6 +29,7 @@ tfb = tfp.bijectors
 from blackjax import rmh, nuts, window_adaptation
 from blackjax.diagnostics import potential_scale_reduction
 
+from jax.random import PRNGKey
 from typing import Dict, Callable, Tuple
 from jaxtyping import Array, Float
 from blackjax.smc.tempered import TemperedSMCState
@@ -61,7 +61,7 @@ def has_converged(samples, threshold:Float = 1.1, verbose:bool = VERBOSE) -> boo
     # however, those tend to be 'converged' anyway
     if verbose:
         print([var for var in jax.tree_util.tree_leaves(R)])
-        print([var.shape for var in jax.tree_util.tree_leaves(R)])
+        print(jax.tree_util.tree_structure(R))
         max_R = jnp.max(jnp.array([jnp.max(r) for r in jax.tree_util.tree_leaves(R)]))
         log_txt = f"{ALGO}: Maximum PSRF: {max_R:0.3f}"
         print(log_txt)
@@ -70,15 +70,28 @@ def has_converged(samples, threshold:Float = 1.1, verbose:bool = VERBOSE) -> boo
             f.write('\n')
     return jnp.all(R_scores), max_R
 
+#
+def get_rmh_parameters(key, model, rmh_sigma_vals:Dict):
+    test_state = model.sample_from_prior(key, num_samples=1)
+    key_leaf_pairs, _ = jax.tree_util.tree_flatten_with_path(test_state)
+    var_idx = 0
+    diag_sigma = jnp.zeros((num_params))
+    for i, (key_path, leaf) in enumerate(key_leaf_pairs):
+        var_size = jnp.prod(jnp.array(leaf.shape), dtype=int)
+        key = key_path[1].key
+        sigma_val = rmh_sigma_vals[key] if key in rmh_sigma_vals else rmh_sigma_vals['_default']
+        diag_sigma = diag_sigma.at[var_idx:var_idx + var_size].set(jnp.repeat(sigma_val, var_size))
+        var_idx += var_size
+    return dict(sigma=jnp.diag(diag_sigma))
+
+#
 def run_smc_batch(key, model, num_mcmc: int):
-    rmh_step = 0.001*jnp.eye(num_params)
-    # rmh_step = rmh_step.at[num_params-1,num_params-1].set(0.001)
-    rmh_parameters = dict(sigma=rmh_step)
+    key, test_key = jrnd.split(key)
+    rmh_parameters = get_rmh_parameters(test_key, model, rmh_sigma_vals)
     smc_parameters = dict(kernel=rmh,
                           kernel_parameters=rmh_parameters,
                           num_particles=num_particles,
                           num_mcmc_steps=num_mcmc)
-
     samples, num_adapt, lml = model.inference(key, mode='mcmc-in-smc', sampling_parameters=smc_parameters)
     return samples, num_adapt, lml
 
@@ -100,23 +113,25 @@ def run_smc_to_convergence(key:PRNGKey, model:BayesianModel, num_mcmc:int, incre
         The smc samples, final number of mcmc steps, and times it took per chain
     """
     def prt(num_mcmc, elapsed_in_attempt):
+        log_txt = f"{ALGO}: iteration with {num_mcmc} MCMC steps took {elapsed_in_attempt} seconds to run."
+        with open(CONVERGENCE_FILENAME, 'a') as f:
+            f.write(log_txt)
+            f.write('\n')
         if VERBOSE:
-            log_txt = f"{ALGO}: iteration with {num_mcmc} MCMC steps took {elapsed_in_attempt} seconds to run."
             print(log_txt)
-            with open(CONVERGENCE_FILENAME, 'a') as f:
-                f.write(log_txt)
-                f.write('\n')
 
-    def make_psrf_fig(psrf_vals):
+    def make_psrf_fig(psrf_vals, init_mcmc = num_mcmc):
         plt.figure()
-        plt.scatter(jnp.arange(len(psrf_vals)), psrf_vals, s=5, color='k')
-        plt.xlabel('iteration')
+        n_mcmc_steps = jnp.repeat(1,len(psrf_vals)) * init_mcmc * jnp.array([increment**i for i in range(len(psrf_vals))])
+        plt.scatter(n_mcmc_steps, psrf_vals, s=5, color='k')
+        plt.xscale('log')
+        plt.xlabel('Number of MCMC steps')
         plt.ylabel('Max PSRF')
         plt.savefig("Figures/cluster_sim/convergence/smc_psrf_trace.pdf")
         plt.close()
 
     key, *subkeys = jrnd.split(key, num_chains + 1)
-    print(f"\t{ALGO}: starting inference with {num_chains} chain, {num_mcmc} MCMC steps")
+    print(f"\t{ALGO}: starting inference with {num_chains} chains, {num_mcmc} MCMC steps")
     time_in_attempt = time.time()
     samples, _, _ = jax.vmap(run_smc_batch, in_axes=(0, None, None))(jnp.array(subkeys), model, num_mcmc)
     elapsed_in_attempt = time.time() - time_in_attempt
@@ -255,7 +270,8 @@ prob_per_cluster = [1/n_clusters]*n_clusters
 sigma_z = 1
 sigma_beta = 0.2
 
-hyperbolic = False
+continuous = True
+hyperbolic = True
 latpos = '_z' if hyperbolic else 'z'
 
 ## Initialize model to sample a prior and from that prior sample an observation. We will learn this observation back
@@ -264,8 +280,10 @@ gt_cluster_index = jrnd.choice(subkey, n_clusters, shape=(N,), p=jnp.array(prob_
 cluster_means_per_node = cluster_means[gt_cluster_index]
 
 gt_priors = {latpos:dx.Normal(cluster_means_per_node, sigma_z*jnp.ones((N, D))),
-            'sigma_beta':dx.Uniform(0., 1.)
              }
+if continuous:
+    gt_priors['sigma_beta'] = dx.Uniform(0., 1.)
+
 hyperparams = dict(mu_z=0.,  # Mean of the _z Normal distribution
                    eps=1e-5,  # Clipping value for p/mu & kappa.
                    bkst=False,  # Whether the position is in Bookstein coordinates
@@ -275,29 +293,36 @@ gt_model = LSM(gt_priors, hyperparameters=hyperparams)
 
 key, prior_key, obs_key, test_key = jrnd.split(key, 4)
 sampled_state = gt_model.sample_from_prior(prior_key, num_samples=1, max_distance=max_D)
-sampled_state.position['sigma_beta'] = sigma_beta
+if continuous:
+    sampled_state.position['sigma_beta'] = sigma_beta
 
 ## Also scale cluster means
 scale = gt_model.scale
 cluster_means /= scale
 
 ## Sample observation
-observation = gt_model.con_loglikelihood_fn(sampled_state).sample(seed=obs_key, sample_shape=(1))
+observation = gt_model.logliklihood_dist(sampled_state).sample(seed=obs_key, sample_shape=(1))
 
 ## Create new non-hierarchical continuous LSM. This is the one we test convergence for
-nonh_con_prior = {latpos: dx.Normal(jnp.zeros((N-3, D)), jnp.ones((N-3, D))),
-                  f"{latpos}b2x": dx.Normal(0, 1),
-                  f"{latpos}b2y": dx.Transformed(dx.Normal(0, 1), tfb.Exp()),
-                  f"{latpos}b3x": dx.Transformed(dx.Normal(0, 1), tfb.Exp()),
-                  'sigma_beta': dx.Uniform(0., 1.)}
+nonh_prior = {latpos: dx.Normal(jnp.zeros((N-3, D)), jnp.ones((N-3, D))),
+              f"{latpos}b2x": dx.Normal(0, 1),
+              f"{latpos}b2y": dx.Transformed(dx.Normal(0, 1), tfb.Exp()),
+              f"{latpos}b3x": dx.Transformed(dx.Normal(0, 1), tfb.Exp())}
+if continuous:
+    nonh_prior['sigma_beta'] = dx.Uniform(0., 1.)
 
-learned_model = LSM(nonh_con_prior, observation)
+learned_model = LSM(nonh_prior, observation)
 
-num_params = (N - 3) * D + 3 + 1
+num_params = (N - 3) * D + 3
+num_params += continuous
+
 num_particles = 1_000
-num_chains = 2
+num_chains = 4
 psrf_threshold = 1.1
 burnin_factor = 0.5
+
+rmh_sigma_vals = dict(_default=0.01,
+                      sigma_beta=0.001)
 
 ## Convergence test
 if ALGO == 'smc':
