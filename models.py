@@ -41,7 +41,7 @@ class LSM(BayesianModel):
         ## Define distance function based on prior parameters. If there is no position distribution in the prior (in hierarchical models), use the hyperbolic paramter.
         if '_z' in prior or 'z' in prior:
             self.distance_func = self.get_hyperbolic_distance if '_z' in prior else self.get_euclidean_distance
-            self.latpos = '_z'  if '_z' in prior else 'z'
+            self.latpos = '_z' if '_z' in prior else 'z'
         else:
             self.distance_func = self.get_hyperbolic_distance if hyperbolic else self.get_euclidean_distance
             self.latpos = '_z' if hyperbolic else 'z'
@@ -61,7 +61,8 @@ class LSM(BayesianModel):
         sampled_state = super().sample_from_prior(key, num_samples)
         self.scale = 1
         if max_distance:
-            max_sampled_dist = jnp.max(self.distance_func(sampled_state.position))
+            latpos = self.get_latent_positions(sampled_state.position)
+            max_sampled_dist = jnp.max(self.distance_func(latpos))
             if max_sampled_dist > max_distance:
                 self.scale = max_sampled_dist / max_distance
                 sampled_state.position[self.latpos] /= self.scale
@@ -73,7 +74,7 @@ class LSM(BayesianModel):
         Returns the Bookstein anchor coordinates for the first positions, in 2 dimensions.
         These Bookstein coordinates are restricted, meaning only 1 node is set, and the others are restricted and learned.
         Args:
-            z: (N-3, D) regular nodes
+            z: (N-3, D) or (n_particles, N-3, D) regular nodes
             zb2x: x-coordinate of the 2nd Bookstein anchor
             zb2y: y_coordinate of the 2nd Bookstein anchor
             zb3x: x-coordinate of the 3rd Bookstein anchor, of which the y-value must be 0
@@ -82,15 +83,20 @@ class LSM(BayesianModel):
         Returns:
             z: (N, D) positions including the Bookstein anchors
         """
-        bookstein_anchors = jnp.zeros(shape=(3, 2))
+
+        # n_dims = len(z.shape)
+        # bkst_shape = (z.shape[0],3,2) if n_dims==3 else (3,2)
+        # ax = 1 if n_dims==3 else 0
+
+        bookstein_anchors = jnp.zeros(shape=(3,2))
         ## First positions at (-B,0)
-        bookstein_anchors = bookstein_anchors.at[0, 0].set(-B)
-        ## Second positions at (x,y)
+        bookstein_anchors = bookstein_anchors.at[0, 0].set(-B) # bookstein_anchors.at[...,0, 0].set(-B)
+        ## Second positions at (x,y) with y > 0
         bookstein_anchors = bookstein_anchors.at[1, 0].set(zb2x)
         bookstein_anchors = bookstein_anchors.at[1, 1].set(zb2y)
         ## Third position at (x,0)
         bookstein_anchors = bookstein_anchors.at[2, 0].set(zb3x - B)
-        zc = jnp.concatenate([bookstein_anchors, z])
+        zc = jnp.concatenate([bookstein_anchors, z], axis=0)
         return zc
 
     #
@@ -220,16 +226,14 @@ class LSM(BayesianModel):
         u_norm = jnp.sqrt(jnp.clip(lor, eps, lor))  # If eps is too small, u_norm gets rounded right back to zero and then we divide by zero
         return jnp.cosh(u_norm) * mu + jnp.sinh(u_norm) * u / u_norm
 
-    def get_euclidean_distance(self, position: Dict) -> Array:
+    def get_euclidean_distance(self, z: Array) -> Array:
         """
         Args:
-            position: dictionary containing the latent Euclidean positions
+            z: latent Euclidean positions
 
         Returns:
             The Euclidean distances
         """
-        z = self.get_latent_positions(position)
-
         N, D = z.shape
         triu_indices = jnp.triu_indices(N, k=1)
         d = self.euclidean_distance(z)[triu_indices]
@@ -257,9 +261,8 @@ class LSM(BayesianModel):
         return z
 
     #
-    def get_hyperbolic_distance(self, position: GibbsState) -> Array:
+    def get_hyperbolic_distance(self, _z: Array) -> Array:
         ## Get distances on hyperbolic plane
-        _z = self.get_latent_positions(position)
         N, D = _z.shape
         triu_indices = jnp.triu_indices(N, k=1)
         z = self.get_hyperbolic_positions(_z)
@@ -267,9 +270,10 @@ class LSM(BayesianModel):
         return d
 
     #
-    def con_loglikelihood_fn(self, state: GibbsState) -> Float:
+    def con_loglikelihood_fn(self, state: GibbsState) -> dx.Distribution:
         position = getattr(state, 'position', state)
-        d = self.distance_func(position)
+        latpos = self.get_latent_positions(position)
+        d = self.distance_func(latpos)
 
         beta_noise = position.get('sigma_beta')
         eps = self.hyperparameters.get('eps')
@@ -284,12 +288,17 @@ class LSM(BayesianModel):
         return loglikelihood
 
     #
-    def bin_loglikelihood_fn(self, state: GibbsState) -> Float:
+    def bin_loglikelihood_fn(self, state: GibbsState) -> dx.Distribution:
         position = getattr(state, 'position', state)
-        d = self.distance_func(position)
+        latpos = self.get_latent_positions(latpos)
+        d = self.distance_func(latpos)
         p = self.distance_mapping(d, self.hyperparameters.get('eps'))
         loglikelihood = dx.Bernoulli(probs=p)
         return loglikelihood
+
+    def logliklihood_dist(self, state: GibbsState) -> dx.Distribution:
+        dist = self.con_loglikelihood_fn if 'sigma_beta' in self.param_priors else self.bin_loglikelihood_fn
+        return dist(state)
 
     #
     def loglikelihood_fn(self) -> Callable:
@@ -299,8 +308,7 @@ class LSM(BayesianModel):
         Returns:
             log_likelihood_fn: The appropriate log-likelihood function of the LSM
         """
-        loglikelihood_distr = self.con_loglikelihood_fn if 'sigma_beta'in self.param_priors else self.bin_loglikelihood_fn
-        loglikelihood_fn_ = lambda s: loglikelihood_distr(s).log_prob(self.observation).sum()
+        loglikelihood_fn_ = lambda state: self.logliklihood_dist(state).log_prob(self.observation).sum()
         return loglikelihood_fn_
     #
 
